@@ -111,7 +111,7 @@ def execute_node(node, main_graph, final_output_node, weight_dict, module, injec
             if "INPUT16" == inject_parameters["inject_type"]:
                 delta_16 = np.zeros(weight_dict["delta_4d"].shape, dtype=np.float32)
                 random_shape = list(weight_dict["delta_4d"].shape)
-                row_index = random_shape[3]//16
+                row_index = random_shape[-1]//16
                 if row_index == 0:
                     row_index = 0
                 else:
@@ -121,7 +121,7 @@ def execute_node(node, main_graph, final_output_node, weight_dict, module, injec
                 if len(np.nonzero(weight_dict["delta_4d"])[0]) > 0:
                     for shape_index_array in np.nonzero(weight_dict["delta_4d"]):
                         indices.append(list(shape_index_array)[0])
-                    indices[3] = row_index
+                    indices[-1] = row_index
 
                     """
                     print(indices)
@@ -129,13 +129,13 @@ def execute_node(node, main_graph, final_output_node, weight_dict, module, injec
                     """
 
                     for i in range(16):
-                        if i >= random_shape[3]:
+                        if i >= random_shape[-1]:
                             break
                         """
                         print(indices) 
                         """
                         delta_16[tuple(indices)] = weight_dict["delta_4d"][(tuple(indices))]
-                        indices[3] = indices[3] + 1
+                        indices[-1] = indices[-1] + 1
                     weight_dict["delta_4d"] = delta_16
                     """
                     print("THIS:")
@@ -156,7 +156,7 @@ def execute_node(node, main_graph, final_output_node, weight_dict, module, injec
             elif "WEIGHT16" == inject_parameters["inject_type"]:
                 delta_16 = np.zeros(weight_dict["delta_4d"].shape, dtype=np.float32)
                 random_shape = list(weight_dict["delta_4d"].shape)
-                column_index = random_shape[2]//16
+                column_index = random_shape[-2]//16
                 if column_index == 0:
                     column_index = 0
                 else:
@@ -166,16 +166,16 @@ def execute_node(node, main_graph, final_output_node, weight_dict, module, injec
                 if len(np.nonzero(weight_dict["delta_4d"])[0]) > 0:
                     for shape_index_array in np.nonzero(weight_dict["delta_4d"]):
                         indices.append(list(shape_index_array)[0])
-                    indices[2] = column_index
+                    indices[-2] = column_index
 
                     for i in range(np.random.randint(1,16)):
-                        if i >= random_shape[2]:
+                        if i >= random_shape[-2]:
                             break
                         """
                         print(indices) 
                         """
                         delta_16[tuple(indices)] = weight_dict["delta_4d"][(tuple(indices))]
-                        indices[2] = indices[2] + 1
+                        indices[-2] = indices[-2] + 1
                     weight_dict["delta_4d"] = delta_16
                     """
                     start_index = tuple([np.random.randint(i) for i in random_shape])
@@ -255,7 +255,7 @@ def expand_node_inputs_outputs(graph, node, weight_dict, module):
         replacement_dictionary = {
             "onnx::ReduceMean_0_dynamic_axes_1": weight_dict["global_in"].shape[1],
             "onnx::Unsqueeze_3_dynamic_axes_1": weight_dict["global_in_3"].shape[1],
-            "onnx::Unsqueeze_3_dynamic_axes_2": weight_dict["global_in_3"].shape[2],
+            "onnx::Unsqueeze_3_dynamic_axes_2": weight_dict["global_in_3"].shape[-2],
         }
 
         for input_tensor in added_inputs:

@@ -5,6 +5,8 @@ import torchvision.transforms as transforms
 import torch
 import math
 import sys
+import onnx
+from typing import List
 
 def debug(faulty_value, golden_value, weight_dict, target_indices, input_dict, faulty_tensor_name, output_tensors, original_tensor_value, dequantized_result_tensor_name, perturb):
     random_indices = [np.random.randint(0, dim) for dim in weight_dict[faulty_tensor_name].shape]
@@ -133,6 +135,13 @@ def delta_init(is_float32=True):
         one_bin += str(np.random.randint(0,2))
     return bin2fp16(one_bin)
 
+def delta_init_int8():
+    one_bin = ''
+    for _ in range(8):
+        one_bin += str(np.random.randint(0,2))
+    return np.int8(int(one_bin, 2))
+
+
 def preprocess_cifar10(input_value):
     mean, std = [x / 255 for x in [125.3, 123.0, 113.9]],  [x / 255 for x in [63.0, 62.1, 66.7]]
     image = Image.fromarray(input_value)
@@ -256,6 +265,22 @@ def expand_node_inputs_outputs(graph, node):
     added_outputs += list(filter(lambda x: x.name in node.output, graph.value_info))
 
     return added_inputs, added_outputs
+
+def get_tensor_shape(model: onnx.ModelProto, tensor_name: str) -> List[int]:
+    # Check all possible tensor locations
+    for tensor in (list(model.graph.input) + 
+                  list(model.graph.output) + 
+                  list(model.graph.value_info)):
+        if tensor.name == tensor_name:
+            try:
+                shape = [dim.dim_value for dim in 
+                        tensor.type.tensor_type.shape.dim]
+                if all(isinstance(d, int) for d in shape):
+                    return shape
+            except AttributeError:
+                continue
+                
+    raise ValueError(f"Could not find valid shape for tensor: {tensor_name}")
 
 def total_bits_diff(tensor1, tensor2):
     assert tensor1.shape == tensor2.shape, "Tensors must have the same shape"

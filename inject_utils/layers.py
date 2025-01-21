@@ -24,11 +24,13 @@ def delta_init():
 def float32_bit_flip(faulty_tensor, target_indices):
     golden_value = faulty_tensor[tuple(target_indices)]
     golden_string = fp32tobin(golden_value)
+    print("Original:",golden_string)
     flip_bit = np.random.randint(32)
     if golden_string[31-flip_bit] == '1':
         inject_string = golden_string[:31-flip_bit] + '0' + golden_string[31-flip_bit+1:]
     else:
         inject_string = golden_string[:31-flip_bit] + '1' + golden_string[31-flip_bit+1:]
+    print("Bitflipped:", inject_string)
     faulty_value = bin2fp32(inject_string)
     return faulty_value, flip_bit
 
@@ -105,7 +107,7 @@ def perturb_quantizer(graph, node, module, model, input_dict, weight_dict, fault
     input_perturb = np.zeros(weight_dict[faulty_tensor_name].shape, dtype=weight_dict[faulty_tensor_name].dtype)
     input_perturb[tuple(target_indices)] = faulty_value
     input_dict[faulty_tensor_name] = input_perturb
-
+    
     """
     print("INPUT INNER:")
     print(input_dict[list(input_dict.keys())[0]].shape)
