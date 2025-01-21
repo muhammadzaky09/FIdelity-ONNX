@@ -75,6 +75,78 @@ def create_int8_fault_injection(input_name, input_shape, target_indices, bit_pos
     
     return nodes
 
+def create_int8_input_fault_injection(input_name, input_shape, target_indices, bit_position, output_name, matmul_output_name):
+    """Create fault injection using pure ONNX operations."""
+    nodes = [
+        # 1. Create shape tensor for zeros
+        helper.make_node("Constant",
+            inputs=[],
+            outputs=["shape_tensor"],
+            value=helper.make_tensor(
+                name="const_shape",
+                data_type=TensorProto.INT64,
+                dims=[len(input_shape)],
+                vals=input_shape
+            )
+        ),
+        
+        # 2. Create zeros tensor using ConstantOfShape
+        helper.make_node("ConstantOfShape",
+            inputs=["shape_tensor"],
+            outputs=["zeros"],
+            value=helper.make_tensor(
+                name="const_zero_value",
+                data_type=TensorProto.INT8,
+                dims=[1],
+                vals=[0]
+            )
+        ),
+        
+        # 3. Create indices tensor for target position
+        helper.make_node("Constant",
+            inputs=[],
+            outputs=["indices"],
+            value=helper.make_tensor(
+                name="const_indices",
+                data_type=TensorProto.INT64,
+                dims=[1, len(target_indices)],  # Shape required by ScatterND
+                vals=target_indices
+            )
+        ),
+        
+        # 4. Create bit mask value (1 << bit_position)
+        helper.make_node("Constant",
+            inputs=[],
+            outputs=["bit_mask"],
+            value=helper.make_tensor(
+                name="const_mask",
+                data_type=TensorProto.INT8,
+                dims=[1],
+                vals=[1 << bit_position]
+            )
+        ),
+        
+        # 5. Create mask tensor using ScatterND
+        helper.make_node("ScatterND",
+            inputs=["zeros", "indices", "bit_mask"],
+            outputs=["mask_tensor"]
+        ),
+        
+        # 6. BitWiseXor with input tensor
+        helper.make_node("BitwiseXor",
+            inputs=[input_name, "mask_tensor"],
+            outputs=["bitwiseOutput"]
+        ),
+        
+        # 7. Add BitWiseXor output with MatMul output
+        helper.make_node("Add",
+            inputs=["bitwiseOutput", matmul_output_name],
+            outputs=[output_name]
+        )
+    ]
+    
+    return nodes
+
 def create_random_int8_fault_injection(output_name: str, output_shape: List[int], target_indices: List[int], random_value: int):
     """Create random fault injection into layer output.
     

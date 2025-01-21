@@ -7,6 +7,7 @@ import math
 import sys
 import onnx
 from typing import List
+from onnx import GraphProto
 
 def debug(faulty_value, golden_value, weight_dict, target_indices, input_dict, faulty_tensor_name, output_tensors, original_tensor_value, dequantized_result_tensor_name, perturb):
     random_indices = [np.random.randint(0, dim) for dim in weight_dict[faulty_tensor_name].shape]
@@ -281,6 +282,38 @@ def get_tensor_shape(model: onnx.ModelProto, tensor_name: str) -> List[int]:
                 continue
                 
     raise ValueError(f"Could not find valid shape for tensor: {tensor_name}")
+
+def find_immediate_input_node_on_path(model, target_layer_name: str, path_start_tensor: str):
+    graph = model.graph if hasattr(model, 'graph') else model
+    
+    # Find target node
+    target_node = None
+    for node in graph.node:
+        if node.name == target_layer_name:
+            target_node = node
+            break
+    
+    if not target_node:
+        raise ValueError(f"Cannot find target node {target_layer_name}")
+    
+    # Helper to find producer of a tensor
+    def find_producer_node(tensor_name):
+        for node in graph.node:
+            if tensor_name in node.output:
+                return node
+        return None
+    
+    # For each input to target node
+    for input_tensor in target_node.input:
+        current = find_producer_node(input_tensor)
+        # Trace back to see if this path leads to our start tensor
+        while current:
+            if path_start_tensor in current.input:
+                # Found path - return immediate input node to target
+                return find_producer_node(input_tensor)
+            current = find_producer_node(current.input[0])
+            
+    raise ValueError(f"Cannot find path from {path_start_tensor} to {target_layer_name}")
 
 def total_bits_diff(tensor1, tensor2):
     assert tensor1.shape == tensor2.shape, "Tensors must have the same shape"

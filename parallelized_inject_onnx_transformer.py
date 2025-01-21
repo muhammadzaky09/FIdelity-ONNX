@@ -435,40 +435,62 @@ def build_auxiliary_graphs(inject_parameters):
         extract_model(input_path, "tensor_to_inject.onnx", None, 
                      input_names, [target_input])
 
-        # 2. Extract golden layer version
+        golden_model_temp = onnx.load(input_path)  # Load full model temporarily
+        immediate_node = find_immediate_input_node_on_path(
+            golden_model_temp,
+            inject_parameters["faulty_operation_name"], 
+            target_input
+        )
+        immediate_output_tensor = immediate_node.output[0]
         input_names_layer = input_names + [target_input]
-        output_names_layer = [inject_parameters["faulty_output_tensor"]]
-        extract_model(input_path, "layer_to_inject_golden.onnx", None, 
-                     input_names_layer, output_names_layer)
+        output_names_layer = [
+            inject_parameters["faulty_output_tensor"]  # Include final output
+        ]
+        extract_model(input_path, "layer_to_inject_golden.onnx", None,
+                    input_names_layer, output_names_layer)
+        # 3. Extract golden layer with both outputs
+        input_names_layer = input_names + [target_input]
+        output_names_layer = [
+            immediate_output_tensor,  # Include Transpose output
+            inject_parameters["faulty_output_tensor"]  # Include final output
+        ]
+        extract_model(input_path, "layer_to_inject_faulty.onnx", None,
+                    input_names_layer, output_names_layer)
         try:
-            golden_model = onnx.load("./separated/layer_to_inject_golden.onnx")
-            input_shape = get_tensor_shape(golden_model, target_input)
-            if not input_shape:
-                raise ValueError(f"Cannot find shape for {target_input}")
+            golden_model = onnx.load("./separated/layer_to_inject_faulty.onnx")
+            print(inject_parameters["faulty_operation_name"])
+            
+            immediate_output_tensor = str(immediate_node.output[0])
+            immediate_node_name = str(immediate_node.name)
+         
+            input_shape = get_tensor_shape(golden_model, immediate_output_tensor)
+            print(input_shape)
             
             # Create injection graph
             target_indices = [np.random.randint(0, dim) for dim in input_shape]
             
-            injection_graph = int8_bitflip_node(
-                target_input,
+            injection_graph = int8_perturb_node(
+                immediate_output_tensor,
                 input_shape,
                 target_indices,
                 inject_parameters["faulty_bit_position"],
-                output_name=target_input
+                output_name=inject_parameters["faulty_output_tensor"]+"_output",
+                matmul_output_name=inject_parameters["faulty_output_tensor"]
             )
 
             # Create fault version
             fault_graph = create_fault_layer_iw(
                 golden_model.graph,
                 injection_graph,
-                target_input
+                immediate_output_tensor,
+                inject_parameters["faulty_output_tensor"]
             )
             
             # Save fault version
             fault_model = helper.make_model(fault_graph)
-            fault_model.opset_import[0].version = 13
-            onnx.checker.check_model(fault_model)
-            onnx.save(fault_model, "./separated/layer_to_inject_fault.onnx")
+            fault_model.opset_import[0].version = 18
+            # onnx.checker.check_model(fault_model)
+            onnx.save(fault_model, "./separated/layer_to_inject_faulty.onnx")
         
         except Exception as e:
             print(f"Error creating INPUT/WEIGHT fault version: {e}")
@@ -517,8 +539,8 @@ def build_auxiliary_graphs(inject_parameters):
             
             # Save fault version
             fault_model = helper.make_model(fault_graph)
-            fault_model.opset_import[0].version = 13
-            onnx.save(fault_model, "./separated/layer_to_inject_fault.onnx")
+            fault_model.opset_import[0].version = 16
+            onnx.save(fault_model, "./separated/layer_to_inject_faulty.onnx")
         
         except Exception as e:
             print(f"Error creating RANDOM fault version: {e}")
@@ -909,6 +931,53 @@ def int8_bitflip_node(input_name, input_shape, target_indices, bit_position, out
     
     return model.graph
 
+def int8_perturb_node(input_name, input_shape, target_indices, bit_position, output_name, matmul_output_name):
+    # 1. Create nodes for fault injection and add
+    nodes = create_int8_input_fault_injection(
+        input_name, 
+        input_shape, 
+        target_indices, 
+        bit_position, 
+        output_name,
+        matmul_output_name
+    )
+    
+    # 2. Define graph inputs - now needs both inputs
+    inputs = [
+        helper.make_tensor_value_info(
+            input_name,  # Transpose_44_out0
+            TensorProto.INT8,
+            input_shape
+        ),
+        helper.make_tensor_value_info(
+            matmul_output_name,  # MatMul_19_out0
+            TensorProto.INT8,
+            input_shape
+        )
+    ]
+    
+    # 3. Define graph outputs - same as before
+    outputs = [helper.make_tensor_value_info(
+        output_name,
+        TensorProto.INT8,
+        input_shape
+    )]
+    
+    # 4. Create complete graph
+    graph = helper.make_graph(
+        nodes=nodes,
+        name="fault_injection",
+        inputs=inputs,
+        outputs=outputs,
+        initializer=[]
+    )
+    
+    # 5. Create model
+    model = helper.make_model(graph)
+    
+    
+    return model.graph
+
 def int8_random_node(output_name: str, output_shape: List[int], target_indices: List[int]):
     """Create graph for random fault injection into layer output."""
     # Generate random INT8 value
@@ -944,7 +1013,7 @@ def int8_random_node(output_name: str, output_shape: List[int], target_indices: 
     )
     
     model = helper.make_model(graph)
-    model.opset_import[0].version = 18
+    model.opset_import[0].version = 16
     
     return model.graph
 
@@ -961,16 +1030,17 @@ def create_fault_layer(layer_graph: GraphProto, injection_graph: GraphProto, tar
     return merged_graph
 
 def create_fault_layer_iw(layer_graph: GraphProto, injection_graph: GraphProto, 
-                      target_tensor_name: str) -> GraphProto:
+                      transpose_output: str, matmul_output: str) -> GraphProto:
     """Merge injection nodes into layer graph at target tensor."""
+    io_map = [
+        (transpose_output, injection_graph.input[0].name),  # For BitWiseXor
+        (matmul_output, injection_graph.input[1].name)      # For Add
+    ]
     
-    # Don't specify io_map, let ONNX handle connections based on tensor names
     merged_graph = onnx.compose.merge_graphs(
         g1=layer_graph,
         g2=injection_graph,
-        io_map=[],  # Empty mapping
-        inputs=[input.name for input in layer_graph.input],
-        outputs=[output.name for output in layer_graph.output]
+        io_map=io_map
     )
     return merged_graph
 
@@ -990,7 +1060,7 @@ def load_trained_model():
 
     for layer in directory_list:
         #for fault_model in ["WEIGHT16"]:#["INPUT", "WEIGHT", "INPUT16", "WEIGHT16", "RANDOM", "RANDOM_BITFLIP"]:
-        for fault_model in [ "RANDOM"]:
+        for fault_model in [ "WEIGHT"]:
             input_inject_data = json.load(open(directory_name + "/" + layer))
             """
             print(input_inject_data)
@@ -1042,7 +1112,7 @@ def load_trained_model():
                 inject_parameters["faulty_bit_position"] = faulty_bit_position
                 build_auxiliary_graphs(inject_parameters)
                 if "RANDOM" not in fault_model:
-                    fix_onnx(module, "./separated/layer_to_inject.onnx", inject_parameters)
+                    fix_onnx(module, "./separated/layer_to_inject_fault.onnx", inject_parameters)
                 # run_model_example(model_path, inject_parameters, pool, total_experiments, number_of_parallelized_experiments)
                 #break
         exit()
