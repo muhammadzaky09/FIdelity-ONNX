@@ -990,7 +990,7 @@ def load_trained_model():
 
     for layer in directory_list:
         #for fault_model in ["WEIGHT16"]:#["INPUT", "WEIGHT", "INPUT16", "WEIGHT16", "RANDOM", "RANDOM_BITFLIP"]:
-        for fault_model in [ "INPUT"]:
+        for fault_model in [ "RANDOM"]:
             input_inject_data = json.load(open(directory_name + "/" + layer))
             """
             print(input_inject_data)
