@@ -899,33 +899,33 @@ def fix_onnx(module, module_path, inject_parameters=None):
 
 
 def int8_bitflip_node(input_name, input_shape, target_indices, bit_position, output_name):
-    # 1. Create nodes same as before
+    
     nodes = create_int8_fault_injection(input_name, input_shape, target_indices, bit_position, output_name)
     
-    # 2. Define graph inputs
+    
     inputs = [helper.make_tensor_value_info(
-        input_name,  # Name matches input_name in nodes
-        TensorProto.INT8,  # Data type
+        input_name,  
+        TensorProto.INT8,  
         input_shape
     )]
     
-    # 3. Define graph outputs
+  
     outputs = [helper.make_tensor_value_info(
-        output_name,  # Name matches last node output
+        output_name,  
         TensorProto.INT8,
         input_shape
     )]
     
-    # 4. Create complete graph
+ 
     graph = helper.make_graph(
         nodes=nodes,
         name="fault_injection",
         inputs=inputs,
         outputs=outputs,
-        initializer=[]  # Any constant tensors needed
+        initializer=[]  
     )
     
-    # 5. Create model (needed for GraphProto)
+
     model = helper.make_model(graph)
     model.opset_import[0].version = 18  # Set opset version
     
@@ -1019,7 +1019,7 @@ def int8_random_node(output_name: str, output_shape: List[int], target_indices: 
 
 def create_fault_layer(layer_graph: GraphProto, injection_graph: GraphProto, target_tensor_name: str) -> GraphProto:
     """Merge injection nodes into layer graph at target tensor."""
-    io_map = [(target_tensor_name, injection_graph.input[0].name)]  # Just connect input
+    io_map = [(target_tensor_name, injection_graph.input[0].name)] 
     merged_graph = onnx.compose.merge_graphs(
         g1=layer_graph,
         g2=injection_graph,
@@ -1030,10 +1030,10 @@ def create_fault_layer(layer_graph: GraphProto, injection_graph: GraphProto, tar
     return merged_graph
 
 def create_fault_layer_iw(layer_graph: GraphProto, injection_graph: GraphProto, 
-                      transpose_output: str, matmul_output: str) -> GraphProto:
+                      output: str, matmul_output: str) -> GraphProto:
     """Merge injection nodes into layer graph at target tensor."""
     io_map = [
-        (transpose_output, injection_graph.input[0].name),  # For BitWiseXor
+        (output, injection_graph.input[0].name),  # For BitWiseXor
         (matmul_output, injection_graph.input[1].name)      # For Add
     ]
     
@@ -1060,7 +1060,7 @@ def load_trained_model():
 
     for layer in directory_list:
         #for fault_model in ["WEIGHT16"]:#["INPUT", "WEIGHT", "INPUT16", "WEIGHT16", "RANDOM", "RANDOM_BITFLIP"]:
-        for fault_model in [ "WEIGHT"]:
+        for fault_model in [ "INPUT"]:
             input_inject_data = json.load(open(directory_name + "/" + layer))
             """
             print(input_inject_data)
@@ -1112,7 +1112,7 @@ def load_trained_model():
                 inject_parameters["faulty_bit_position"] = faulty_bit_position
                 build_auxiliary_graphs(inject_parameters)
                 if "RANDOM" not in fault_model:
-                    fix_onnx(module, "./separated/layer_to_inject_fault.onnx", inject_parameters)
+                    fix_onnx(module, "./separated/layer_to_inject_faulty.onnx", inject_parameters)
                 # run_model_example(model_path, inject_parameters, pool, total_experiments, number_of_parallelized_experiments)
                 #break
         exit()
