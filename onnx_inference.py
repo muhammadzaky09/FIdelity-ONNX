@@ -145,7 +145,7 @@ class Llama:
         position_ids = cp.arange(seqlen, dtype=cp.int64).reshape((1, seqlen))
         position_ids[0][0] = pastlen
 
-        attention_mask = np.ones((1, seqlen + pastlen), dtype=np.float32)
+        attention_mask = cp.ones((1, seqlen + pastlen), dtype=cp.float32)
         attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, (1, seqlen), hidden, pastlen)
 
@@ -154,7 +154,7 @@ class Llama:
             past_value = self.pastvalues[idx]
 
             if past_key is None:
-                zero_tensor = np.zeros((1, 32, 0, 128), dtype=np.float32)
+                zero_tensor = cp.zeros((1, 32, 0, 128), dtype=cp.float32)
                 inputs = {
                     'hidden_in': hidden,
                     'attn_mask': attention_mask,
@@ -198,7 +198,7 @@ class Llama:
         position_ids = cp.arange(seqlen, dtype=cp.int64).reshape((1, seqlen))
         position_ids[0][0] = pastlen
 
-        attention_mask = np.ones((1, seqlen + pastlen), dtype=np.float32)
+        attention_mask = cp.ones((1, seqlen + pastlen), dtype=cp.float32)
         attention_mask = self._prepare_decoder_attention_mask(attention_mask, (1, seqlen), hidden, pastlen)
 
         for idx in range(self.DECODER_COUNT):
