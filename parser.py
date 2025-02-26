@@ -1,6 +1,7 @@
 import onnx
-from onnx import helper, TensorProto, save_model
 import json
+import os
+import glob
 
 def find_weight_constant_node(graph, candidate):
     print(f"\nSearching for weight constant node for candidate: {candidate}")
@@ -85,7 +86,7 @@ def parse_transformer_pairs(model_path: str):
                 "weight_node": weight_node_name,
                 "decoder_path": model_path
             }
-            decoder_name = model_path.split('/')[-1].replace('.onnx', '')
+            decoder_name = os.path.basename(model_path).replace('.onnx', '')
             json_filename = f'input_llm/{pattern_name}_{decoder_name}.json'
             with open(json_filename, 'w') as f:
                 json.dump(info, f, indent=4)
@@ -97,4 +98,13 @@ def parse_transformer_pairs(model_path: str):
             print("  weight_node:", weight_node_name)
 
 if __name__ == "__main__":
-    parse_transformer_pairs("decoders/decoder-merge-20.onnx")
+    # Directory containing your ONNX files.
+    onnx_dir = "decoders"
+    # Use glob to find all .onnx files in the specified directory.
+    onnx_files = glob.glob(os.path.join(onnx_dir, "*.onnx"))
+    print(f"Found {len(onnx_files)} ONNX files in directory '{onnx_dir}'")
+    
+    # Process each ONNX file.
+    for model_path in onnx_files:
+        print(f"\nProcessing {model_path}")
+        parse_transformer_pairs(model_path)

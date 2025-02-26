@@ -368,7 +368,7 @@ if __name__ == "__main__":
     # Directory containing per-layer configuration files.
     # Prepare a set of prompts from the Guanaco dataset.
     prompts = prepare_guanaco_prompts("mlabonne/guanaco-llama2-1k", num_samples=1000)
-    model = SentenceTransformer('all-MiniLM-L6-v2')
+    # model = SentenceTransformer('all-MiniLM-L6-v2')
 
     print("Starting experiments...")
 
@@ -386,6 +386,7 @@ if __name__ == "__main__":
 
     # Loop over each layer configuration.
     for layer_file in os.listdir("input_llm"):
+        
         config_path = os.path.join("input_llm", layer_file)
         config = json.load(open(config_path))
         print("Processing layer configuration:", layer_file)
@@ -404,6 +405,7 @@ if __name__ == "__main__":
                     else:
                         faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
                     print("Faulty model path:", faulty_path)
+                    print(extract_decoder_idx(faulty_path))
                     
                     # Pick a random prompt.
                     prompt_index = np.random.randint(0, len(prompts))
