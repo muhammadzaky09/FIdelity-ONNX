@@ -382,7 +382,7 @@ if __name__ == "__main__":
     }
 
     # Create a persistent Llama instance once.
-    persistent_llama = Llama(onnxdir='decoders', config=llama_config)
+    persistent_llama = Llama(onnxdir='decoders/7B', config=llama_config)
 
     # Loop over each layer configuration.
     for layer_file in os.listdir("input_llm"):
