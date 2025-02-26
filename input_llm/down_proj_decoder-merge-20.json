@@ -1,0 +1,6 @@
+{
+    "round_node": "/mlp/down_proj/Round",
+    "matmul_node": "/mlp/down_proj/MatMul",
+    "weight_node": "onnx::MatMul_440",
+    "decoder_path": "decoders/decoder-merge-20.onnx"
+}
