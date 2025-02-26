@@ -8,6 +8,48 @@ import sys
 import onnx
 from typing import List
 from onnx import GraphProto
+from onnx import shape_inference
+from collections import defaultdict, deque
+
+def analyze_onnx_path(model_path, source_pattern, target_pattern):
+    model = onnx.load(model_path)
+    model = shape_inference.infer_shapes(model)
+    
+    consumers = defaultdict(list)
+    for node in model.graph.node:
+        for inp in node.input:
+            consumers[inp].append(node)
+    
+    source_nodes = [n for n in model.graph.node 
+                   if n.op_type == 'Round' and source_pattern in n.name]
+    
+    for src_node in source_nodes:
+        visited = set()
+        queue = deque([(src_node.output[0], [src_node])])  # Start with source node
+        
+        while queue:
+            current_tensor, path = queue.popleft()
+            if current_tensor in visited:
+                continue
+            visited.add(current_tensor)
+            
+            for consumer in consumers.get(current_tensor, []):
+                new_path = path + [consumer]
+                
+                if consumer.op_type == 'MatMul' and target_pattern in consumer.name:
+                    # Get all external inputs in the path
+                    external_inputs = []
+                    for node in new_path:
+                        if node.op_type == 'Mul':
+                            external_inputs.extend(
+                                inp for inp in node.input 
+                                if inp not in {n.output[0] for n in new_path}
+                            )
+                    return (src_node, consumer, new_path, external_inputs)
+                
+                queue.append((consumer.output[0], new_path))
+    
+    return None
 
 def debug(faulty_value, golden_value, weight_dict, target_indices, input_dict, faulty_tensor_name, output_tensors, original_tensor_value, dequantized_result_tensor_name, perturb):
     random_indices = [np.random.randint(0, dim) for dim in weight_dict[faulty_tensor_name].shape]
@@ -268,20 +310,41 @@ def expand_node_inputs_outputs(graph, node):
     return added_inputs, added_outputs
 
 def get_tensor_shape(model: onnx.ModelProto, tensor_name: str) -> List[int]:
-    # Check all possible tensor locations
-    for tensor in (list(model.graph.input) + 
-                  list(model.graph.output) + 
-                  list(model.graph.value_info)):
+    # Run shape inference first
+    model = shape_inference.infer_shapes(model)
+
+    # Check value info first
+    for value_info in model.graph.value_info:
+        if value_info.name == tensor_name:
+            return [d.dim_value for d in value_info.type.tensor_type.shape.dim]
+    
+    # Check inputs
+    for tensor in model.graph.input:
         if tensor.name == tensor_name:
-            try:
-                shape = [dim.dim_value for dim in 
-                        tensor.type.tensor_type.shape.dim]
-                if all(isinstance(d, int) for d in shape):
-                    return shape
-            except AttributeError:
-                continue
-                
-    raise ValueError(f"Could not find valid shape for tensor: {tensor_name}")
+            return [d.dim_value for d in tensor.type.tensor_type.shape.dim]
+            
+    # Check outputs
+    for tensor in model.graph.output:
+        if tensor.name == tensor_name:
+            return [d.dim_value for d in tensor.type.tensor_type.shape.dim]
+    
+    # Check initializers
+    for init in model.graph.initializer:
+        if init.name == tensor_name:
+            return list(init.dims)
+    
+    # Trace through producer nodes
+    shape_preserving_ops = {
+        'Round', 'Identity', 'Reshape', 'Add', 'Sub', 
+        'Mul', 'Div', 'Cast', 'Clip', 'Relu'
+    }
+    
+    for node in model.graph.node:
+        if tensor_name in node.output:
+            if node.op_type in shape_preserving_ops:
+                return get_tensor_shape(model, node.input[0])
+    
+    raise ValueError(f"Could not determine shape for tensor: {tensor_name}")
 
 def find_immediate_input_node_on_path(model, target_layer_name: str, path_start_tensor: str):
     graph = model.graph if hasattr(model, 'graph') else model

@@ -2,3 +2,5 @@ checkpoint/
 weights/
 try/
 separated/
+decoders/
+*.onnx

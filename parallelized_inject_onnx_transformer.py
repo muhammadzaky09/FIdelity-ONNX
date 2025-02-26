@@ -931,7 +931,7 @@ def int8_bitflip_node(input_name, input_shape, target_indices, bit_position, out
     
     return model.graph
 
-def int8_perturb_node(input_name, input_shape, target_indices, bit_position, output_name, matmul_output_name):
+def int8_perturb_node(input_name, input_shape, target_indices, bit_position, output_name, matmul_input_name):
     # 1. Create nodes for fault injection and add
     nodes = create_int8_input_fault_injection(
         input_name, 
@@ -939,7 +939,7 @@ def int8_perturb_node(input_name, input_shape, target_indices, bit_position, out
         target_indices, 
         bit_position, 
         output_name,
-        matmul_output_name
+        matmul_input_name
     )
     
     # 2. Define graph inputs - now needs both inputs
