@@ -376,7 +376,7 @@ if __name__ == "__main__":
         'temperature': 0.0,
         'topk': 1,
         'max': 1000,
-        'poolsize': 32,
+        'poolsize': 40,
         'fp16': False
     }
 
