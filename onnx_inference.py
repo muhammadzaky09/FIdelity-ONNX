@@ -9,12 +9,10 @@ from llama.utils import cpsoftmax, cpmultinominal2D, cpgreedy2D
 from llama.logits_process import warp_temperature, warp_topk
 import argparse
 from datasets import load_dataset
-import nltk
 import cupy as cp
 from find_op_pairs import modify_onnx_graph_input, modify_onnx_graph_weight, modify_onnx_graph_random
 import numpy as np
 import random
-from sentence_transformers import SentenceTransformer, util
 
 PROMPT_DICT = {
     "prompt_input":
