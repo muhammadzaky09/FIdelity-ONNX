@@ -65,10 +65,11 @@ class OrtWrapper:
 
         # Copy outputs to CuPy arrays
         outputs = {}
-        for name in output_names:
-            ort_output = self.io_binding.get_output(name)
-            outputs[name] = cp.asarray(ort_output)
+        ort_outputs = self.io_binding.get_outputs()
+        for name, out in zip(self.output_names, ort_outputs):
+            outputs[name] = cp.asarray(out)
         return outputs
+
     
     def __del__(self):
         logger.debug('{} unload'.format(self.onnxfile))
