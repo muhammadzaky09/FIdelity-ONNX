@@ -39,8 +39,6 @@ class OrtWrapper:
         else:
             raise ValueError("Unsupported dtype: {}".format(dtype))
 
-
-
     def forward(self, _inputs: dict):
         assert len(self.inputs) == len(_inputs)
         self.io_binding.clear_binding_inputs()
@@ -67,7 +65,8 @@ class OrtWrapper:
         outputs = {}
         ort_outputs = self.io_binding.get_outputs()
         for name, out in zip(self.output_names, ort_outputs):
-            outputs[name] = cp.asarray(out)
+            # Convert the OrtValue to a numpy array first, then to a CuPy array
+            outputs[name] = cp.asarray(out.numpy())
         return outputs
 
     
