@@ -357,10 +357,10 @@ def prepare_guanaco_prompts(dataset_name="mlabonne/guanaco-llama2-1k", num_sampl
 def extract_decoder_idx(path):
     import os
     filename = os.path.basename(path)
-    if 'decoder' in filename:
-        decoder_idx_str = filename.split('decoder-merge-')[1].split('.')[0]
+    if 'decoder-merge-' in filename:
+        # Split by 'decoder-merge-' and then take the first part before an underscore.
+        decoder_idx_str = filename.split('decoder-merge-')[1].split('_')[0]
         return int(decoder_idx_str)
-
 
 if __name__ == "__main__":
     # print(extract_decoder_idx('decoders/7B/decoder-merge-20.onnx'))
