@@ -25,17 +25,17 @@ class OrtWrapper:
     def _get_ort_type(self, dtype):
         # Map common Cupy/NumPy dtypes to numpy dtypes expected by ORT.
         if dtype == cp.float32 or dtype == np.float32:
-            return cp.float32
+            return np.float32
         elif dtype == cp.float64 or dtype == np.float64:
-            return cp.float64
+            return np.float64
         elif dtype == cp.int32 or dtype == np.int32:
-            return cp.int32
+            return np.int32
         elif dtype == cp.int64 or dtype == np.int64:
-            return cp.int64
+            return np.int64
         elif dtype == cp.uint8 or dtype == np.uint8:
-            return cp.uint8
+            return np.uint8
         elif dtype == cp.int8 or dtype == np.int8:
-            return cp.int8
+            return np.int8
         else:
             raise ValueError("Unsupported dtype: {}".format(dtype))
 
