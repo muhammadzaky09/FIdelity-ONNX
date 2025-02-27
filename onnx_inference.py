@@ -365,6 +365,7 @@ def extract_decoder_idx(path):
 
 
 if __name__ == "__main__":
+    # print(extract_decoder_idx('decoders/7B/decoder-merge-20.onnx'))
     # Directory containing per-layer configuration files.
     # Prepare a set of prompts from the Guanaco dataset.
     prompts = prepare_guanaco_prompts("mlabonne/guanaco-llama2-1k", num_samples=1000)
