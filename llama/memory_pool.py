@@ -78,7 +78,7 @@ class OrtWrapper:
         outputs = {}
         ort_outputs = self.io_binding.get_outputs()
         for name, out in zip(self.output_names, ort_outputs):
-            outputs[name] = ortvalue_to_cupy(out, dtype=np.float32)
+            outputs[name] = ortvalue_to_cupy(out, dtype=np.float16)
         return outputs
 
 
