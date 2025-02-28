@@ -406,27 +406,26 @@ if __name__ == "__main__":
             # For each bit position (0-7).
             for bit_position in range(8):
                 # Run several experiments for this combination.
+                if fault_model in ['INPUT', 'INPUT16']:
+                    faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
+                elif fault_model in ['WEIGHT', 'WEIGHT16']:
+                    faulty_path = modify_onnx_graph_weight(config, fault_model, bit_position)
+                else:
+                    faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
+                # Pick a random prompt.
+                prompt_index = np.random.randint(0, len(prompts))
+                prompt = prompts[prompt_index]
+                print("Prompt:", prompt)
                 for experiment in range(10):
                     # Choose the appropriate faulty model file.
-                    if fault_model in ['INPUT', 'INPUT16']:
-                        faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
-                    elif fault_model in ['WEIGHT', 'WEIGHT16']:
-                        faulty_path = modify_onnx_graph_weight(config, fault_model, bit_position)
-                    else:
-                        faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
                     print("Faulty model path:", faulty_path)
                     print(extract_decoder_idx(faulty_path))
-                    
-                    # Pick a random prompt.
-                    prompt_index = np.random.randint(0, len(prompts))
-                    prompt = prompts[prompt_index]
-                    print("Prompt:", prompt)
                     print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}, Experiment: {experiment}")
                     
                     # ----- Golden Run (No Fault Injection) -----
                     golden_output = persistent_llama.sample_golden(prompt)
                     print("Golden Output:")
-                    print(golden_output)
+ 
                     
                     # ----- Faulty Run (One-Time Fault Injection) -----
                     # Tokenize the prompt to choose a valid target token index.
@@ -443,6 +442,6 @@ if __name__ == "__main__":
                     
                     faulty_output = persistent_llama.sample_faulty(prompt)
                     print("Faulty Output:")
-                    print(faulty_output)
+                
                     
                     # Evaluation with cosine similarity, etc.
