@@ -283,7 +283,7 @@ class Llama:
     def sample_faulty(self, prompt: str = 'bonjour'):
         prompt = prompt.strip()
         format_prompt = PROMPT.format_map({'instruction': prompt})
-        input_ids = self.tokenizer.encode(format_prompt, True, False)
+        input_ids = self.tokenizer.encode(format_prompt)
         input_ids = cp.array(input_ids, dtype=cp.int64).reshape((1, len(input_ids)))
 
         # Reset caches.

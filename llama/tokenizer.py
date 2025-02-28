@@ -9,14 +9,14 @@ class Tokenizer:
         # Optionally, you can log vocabulary info:
         logger.info(f"Vocabulary size: {len(self.tokenizer.get_vocab())}")
     
-    def encode(self, s: str, **kwargs):
+    def encode(self, s: str, ):
         """
         Encodes a string into token IDs.
         By default, special tokens are added automatically.
         """
         # AutoTokenizer by default inserts special tokens if its configuration requires it.
         # return_tensors="pt" returns a PyTorch tensor.
-        input_ids = self.tokenizer(s, return_tensors="pt", **kwargs).input_ids
+        input_ids = self.tokenizer(s, return_tensors="pt", ).input_ids
         # Convert tensor to list (squeeze to remove batch dimension)
         return input_ids.squeeze(0).tolist()
     
