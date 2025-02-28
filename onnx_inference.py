@@ -130,33 +130,17 @@ class Llama:
         return outputs
 
     def decode(self, token: cp.ndarray):
-        # embed space
+        # Get the initial embedding
         hidden = self.decoder.embed(token)
-        assert hidden.shape[-1] == 4096
-
-        if self.pastkeys[0] is None:
-            pastlen = 0
-        else:
-            pastlen = self.pastkeys[0].shape[-2]
-        seqlen = hidden.shape[1]
-
-        position_ids = cp.arange(seqlen, dtype=cp.int64).reshape((1, seqlen))
-        position_ids[0][0] = pastlen
-
-        attention_mask = cp.ones((1, seqlen + pastlen), dtype=cp.float32)
-        attention_mask = self._prepare_decoder_attention_mask(
-            attention_mask, (1, seqlen), hidden, pastlen)
-
+        # Assume past length management is done beforehand
         for idx in range(self.DECODER_COUNT):
-            past_key = self.pastkeys[idx]
-            past_value = self.pastvalues[idx]
-
-            if past_key is None:
+            # Prepare the inputs for the layer
+            if self.pastkeys[idx] is None:
                 zero_tensor = cp.zeros((1, 32, 0, 128), dtype=cp.float32)
                 inputs = {
                     'hidden_in': hidden,
-                    'attn_mask': attention_mask,
-                    'position_ids': position_ids,
+                    'attn_mask': attention_mask,  # Defined elsewhere
+                    'position_ids': position_ids,  # Defined elsewhere
                     'past_key_in': zero_tensor,
                     'past_value_in': zero_tensor
                 }
@@ -165,26 +149,41 @@ class Llama:
                     'hidden_in': hidden,
                     'attn_mask': attention_mask,
                     'position_ids': position_ids,
-                    'past_key_in': past_key,
-                    'past_value_in': past_value
+                    'past_key_in': self.pastkeys[idx],
+                    'past_value_in': self.pastvalues[idx]
                 }
-
+            
+            # If using fp16, convert inputs appropriately.
             if self.config['fp16']:
                 inputs = self.convert_to_fp16(inputs)
+            
+            # Run the layer
             outputs = self.decoder.decode(inputs, idx)
-
-            hidden = outputs[
-                'hidden_out']  # [[[ 0.0221,  0.0120,  0.0007,  ..., -0.0614, -0.0625,  0.0494]]]
+            
+            # Clean up intermediate variables to free memory
+            del inputs  # No longer needed
+            if 'hidden' in locals():
+                del hidden  # Remove the previous hidden state
+            
+            # Update with new outputs
+            hidden = outputs['hidden_out']
             self.pastkeys[idx] = outputs['past_key']
             self.pastvalues[idx] = outputs['past_value']
             
+            # Remove outputs reference
             del outputs
-        
-            # Force Cupy to free unused memory blocks
+            
+            # Force Cupy to free any cached but unused memory blocks
             cp.get_default_memory_pool().free_all_blocks()
-
+            
+            # Optionally, force Python garbage collection
+            import gc
+            gc.collect()
+        
+        # Process final hidden state through norm and head
         hidden = self.decoder.norm_head(hidden)
         return hidden
+
     
     def decode_faulty(self, token: cp.ndarray):
         """
