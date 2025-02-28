@@ -1,37 +1,127 @@
-from loguru import logger
-from .utils import singleton
-import onnxruntime as ort
+# from loguru import logger
+# from .utils import singleton
+# import onnxruntime as ort
+# import numpy as np
+# import os
+# import sys
+# import cupy as cp
+# import psutil
+# import math
+
+# def ortvalue_to_cupy(ort_value, dtype=np.float16):
+#     """
+#     Wrap the GPU memory of an OrtValue as a CuPy array without copying.
+#     """
+#     # Get pointer, shape, and compute total size in bytes.
+#     ptr = ort_value.data_ptr()         # pointer as an integer
+#     shape = tuple(ort_value.shape())    # e.g., (batch_size, 1, vocab_size)
+#     size_bytes = np.prod(shape) * np.dtype(dtype).itemsize
+    
+#     # Wrap the existing GPU memory. We pass the OrtValue as the owner so it stays alive.
+#     unowned_mem = cp.cuda.UnownedMemory(ptr, size_bytes, ort_value)
+#     memptr = cp.cuda.MemoryPointer(unowned_mem, 0)
+    
+#     # Create a CuPy ndarray using the memory pointer.
+#     return cp.ndarray(shape, dtype=dtype, memptr=memptr)
+
+# class OrtWrapper:
+#     def __init__(self, onnxfile: str):
+#         assert os.path.exists(onnxfile)
+#         self.onnxfile = onnxfile
+#         self.sess = ort.InferenceSession(onnxfile,
+#                                          providers=['CUDAExecutionProvider'],
+#                                          provider_options=[{'device_id': 0}]
+#                                          )
+#         self.io_binding = self.sess.io_binding()
+#         self.inputs = self.sess.get_inputs()
+#         outputs = self.sess.get_outputs()
+#         self.output_names = [output.name for output in outputs]
+#         logger.debug('{} loaded'.format(onnxfile))
+    
+#     def _get_ort_type(self, dtype):
+#         # Map common Cupy/NumPy dtypes to numpy dtypes expected by ORT.
+#         if dtype == cp.float32 or dtype == np.float32:
+#             return np.float32
+#         elif dtype == cp.uint8 or dtype == np.uint8:
+#             return np.uint8
+#         elif dtype == cp.int8 or dtype == np.int8:
+#             return np.int8
+#         elif dtype == cp.int64 or dtype == np.int64:
+#             return np.int64
+#         elif dtype == cp.float16 or dtype == np.float16:
+#             return np.float16
+
+#         else:
+#             raise ValueError("Unsupported dtype: {}".format(dtype))
+
+#     def forward(self, _inputs: dict):
+#         assert len(self.inputs) == len(_inputs)
+#         self.io_binding.clear_binding_inputs()
+#         self.io_binding.clear_binding_outputs()
+
+#         for name, tensor in _inputs.items():
+#             self.io_binding.bind_input(
+#                 name=name,
+#                 device_type='cuda',
+#                 device_id=0,
+#                 element_type=self._get_ort_type(tensor.dtype),
+#                 shape=tensor.shape,
+#                 buffer_ptr=tensor.data.ptr
+#             )
+
+#         output_names = [output.name for output in self.sess.get_outputs()]
+#         for name in output_names:
+#             self.io_binding.bind_output(name, 'cuda')
+#         self.sess.run_with_iobinding(self.io_binding)
+
+#         # Retrieve outputs by wrapping the GPU buffers directly as CuPy arrays.
+#         outputs = {}
+#         ort_outputs = self.io_binding.get_outputs()
+#         for name, out in zip(self.output_names, ort_outputs):
+#             outputs[name] = ortvalue_to_cupy(out, dtype=np.float16)
+#         return outputs
+
+
+
+    
+#     def __del__(self):
+#         logger.debug('{} unload'.format(self.onnxfile))
+
 import numpy as np
-import os
-import sys
 import cupy as cp
+import onnxruntime as ort
+from loguru import logger
+import os
+from .utils import singleton
 import psutil
 import math
-
-def ortvalue_to_cupy(ort_value, dtype=np.float16):
+def ortvalue_to_cupy_preallocated(ort_value, dtype=np.float16):
     """
-    Wrap the GPU memory of an OrtValue as a CuPy array without copying.
+    Wrap the GPU memory of an OrtValue (that was preallocated by us)
+    as a CuPy array without copying. Since we allocated it ourselves,
+    we assume the memory is contiguous and correctly sized.
     """
-    # Get pointer, shape, and compute total size in bytes.
-    ptr = ort_value.data_ptr()         # pointer as an integer
-    shape = tuple(ort_value.shape())    # e.g., (batch_size, 1, vocab_size)
+    # Get pointer and shape from the OrtValue.
+    ptr = ort_value.data_ptr()         # raw GPU pointer (an integer)
+    shape = tuple(ort_value.shape())    # expected shape (e.g., (batch, 1, vocab_size))
+    # Compute total size in bytes.
     size_bytes = np.prod(shape) * np.dtype(dtype).itemsize
-    
-    # Wrap the existing GPU memory. We pass the OrtValue as the owner so it stays alive.
+
+    # Wrap the memory using Cupy's UnownedMemory. Pass ort_value as owner.
     unowned_mem = cp.cuda.UnownedMemory(ptr, size_bytes, ort_value)
     memptr = cp.cuda.MemoryPointer(unowned_mem, 0)
-    
-    # Create a CuPy ndarray using the memory pointer.
+    # Create a CuPy array that uses the preallocated GPU memory.
     return cp.ndarray(shape, dtype=dtype, memptr=memptr)
 
 class OrtWrapper:
     def __init__(self, onnxfile: str):
         assert os.path.exists(onnxfile)
         self.onnxfile = onnxfile
-        self.sess = ort.InferenceSession(onnxfile,
-                                         providers=['CUDAExecutionProvider'],
-                                         provider_options=[{'device_id': 0}]
-                                         )
+        self.sess = ort.InferenceSession(
+            onnxfile,
+            providers=['CUDAExecutionProvider'],
+            provider_options=[{'device_id': 0}]
+        )
         self.io_binding = self.sess.io_binding()
         self.inputs = self.sess.get_inputs()
         outputs = self.sess.get_outputs()
@@ -50,15 +140,16 @@ class OrtWrapper:
             return np.int64
         elif dtype == cp.float16 or dtype == np.float16:
             return np.float16
-
         else:
             raise ValueError("Unsupported dtype: {}".format(dtype))
-
+    
     def forward(self, _inputs: dict):
+        # Clear previous bindings.
         assert len(self.inputs) == len(_inputs)
         self.io_binding.clear_binding_inputs()
         self.io_binding.clear_binding_outputs()
 
+        # Bind input tensors (assumed to be Cupy arrays on GPU).
         for name, tensor in _inputs.items():
             self.io_binding.bind_input(
                 name=name,
@@ -68,25 +159,32 @@ class OrtWrapper:
                 shape=tensor.shape,
                 buffer_ptr=tensor.data.ptr
             )
+        
+        # Preallocate output buffers.
+        # We query output metadata from the session.
+        outputs_info = self.sess.get_outputs()
+        output_buffers = {}
+        for out_info in outputs_info:
+            # Use the static shape provided by the model.
+            # (If dynamic dimensions exist, you must determine the expected shape.)
+            expected_shape = tuple(out_info.shape)
+            # Set the desired dtype; here we assume the model outputs are fp16.
+            expected_dtype = np.float16
+            Y_ortvalue = ort.OrtValue.ortvalue_from_shape_and_type(expected_shape, expected_dtype, 'cuda', 0)
+            self.io_binding.bind_ortvalue_output(out_info.name, Y_ortvalue)
+            output_buffers[out_info.name] = Y_ortvalue
 
-        output_names = [output.name for output in self.sess.get_outputs()]
-        for name in output_names:
-            self.io_binding.bind_output(name, 'cuda')
+        # Run inference.
         self.sess.run_with_iobinding(self.io_binding)
 
-        # Retrieve outputs by wrapping the GPU buffers directly as CuPy arrays.
+        # Wrap the preallocated output buffers as CuPy arrays.
         outputs = {}
-        ort_outputs = self.io_binding.get_outputs()
-        for name, out in zip(self.output_names, ort_outputs):
-            outputs[name] = ortvalue_to_cupy(out, dtype=np.float16)
+        for out_info in outputs_info:
+            outputs[out_info.name] = ortvalue_to_cupy_preallocated(output_buffers[out_info.name], dtype=np.float16)
         return outputs
 
-
-
-    
     def __del__(self):
         logger.debug('{} unload'.format(self.onnxfile))
-
 
 @singleton
 class MemoryPoolSimple:
