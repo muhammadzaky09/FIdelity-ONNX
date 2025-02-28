@@ -43,7 +43,7 @@ class Llama:
         self.decoder = Decoder(pool, onnxdir, 'decoder-merge-{}.onnx',
                                self.DECODER_COUNT)
         self.config = config
-        
+
         # cache
         self.pastkeys = [None for i in range(self.DECODER_COUNT)]
         self.pastvalues = [None for i in range(self.DECODER_COUNT)]
@@ -407,7 +407,9 @@ if __name__ == "__main__":
                 # Pick a random prompt.
                 prompt_index = np.random.randint(0, len(prompts))
                 prompt = prompts[prompt_index]
+                prompt = "Bonjour"
                 print("Prompt:", prompt)
+           
                 for experiment in range(10):
                     # Choose the appropriate faulty model file.
                     # print("Faulty model path:", faulty_path)
