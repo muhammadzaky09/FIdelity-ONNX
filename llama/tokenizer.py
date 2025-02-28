@@ -9,8 +9,7 @@ class Tokenizer:
         logger.info(f"FINISH tokens: { self.tokenizer.eos_token_id}")
     
     def encode(self, s: str, ):
-        input_ids = self.tokenizer(s, return_tensors="pt", ).input_ids
-        return input_ids.squeeze(0).tolist()
+        return self.tokenizer.encode(s, add_special_tokens=True)
     
     def decode(self, token_ids):
         if hasattr(token_ids, 'tolist'):
