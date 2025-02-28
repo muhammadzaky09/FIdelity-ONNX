@@ -5,7 +5,7 @@ from loguru import logger
 from llama.tokenizer import Tokenizer
 from llama.decoder import Decoder
 from llama.memory_pool import MemoryPoolSimple
-from llama.utils import npsoftmax, npmultinominal2D, npgreedy2D
+from llama.utils import npsoftmax, npmultinominal2D
 from llama.logits_process import warp_temperature, warp_topk
 import argparse
 from datasets import load_dataset
