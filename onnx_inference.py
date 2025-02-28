@@ -261,6 +261,7 @@ class Llama:
         format_prompt = PROMPT.format_map({'instruction': prompt})
         # Tokenize on CPU and move tokens to GPU.
         input_ids = self.tokenizer.encode(format_prompt, True, False)
+        print(input_ids)
         input_ids = cp.array(input_ids, dtype=cp.int64).reshape((1, len(input_ids)))
 
         # Reset caches.
