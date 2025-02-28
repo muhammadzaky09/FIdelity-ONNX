@@ -42,8 +42,8 @@ class OrtWrapper:
         assert len(self.inputs) == len(_inputs)
         self.io_binding.clear_binding_inputs()
         self.io_binding.clear_binding_outputs()
-    
-        # Bind input tensors (already on GPU)
+
+        # Bind input tensors (assuming they are on GPU)
         for name, tensor in _inputs.items():
             self.io_binding.bind_input(
                 name=name,
@@ -54,25 +54,42 @@ class OrtWrapper:
                 buffer_ptr=tensor.data.ptr
             )
 
-        # Pre-allocate GPU buffers for model outputs
+        # Pre-allocate GPU buffers for model outputs.
+        # For autoregressive models, each forward pass typically produces one new token,
+        # but for the embed model, the output shape depends on the input sequence length.
         output_buffers = {}
-        batch_size = list(_inputs.values())[0].shape[0]  # Assuming consistent batch size
-        vocab_size = 32000  # Adjust based on your tokenizer/model
+        batch_size = list(_inputs.values())[0].shape[0]
+        # Get the sequence length from one of the inputs (e.g. input_ids)
+        seq_len = list(_inputs.values())[0].shape[1]
 
-        expected_shape = (batch_size, 1, vocab_size)  # Llama-2 generates one token at a time
         for name in self.output_names:
+            # Decide expected shape based on the output name
+            if name == 'embed':
+                # For the embedding model, output shape is (batch_size, seq_len, embed_dim)
+                embed_dim = 4096  # Adjust if necessary
+                expected_shape = (batch_size, seq_len, embed_dim)
+                expected_dtype = np.float32
+            else:
+                # For other outputs (like decoder logits), assume one token is generated
+                vocab_size = 32000  # Adjust as needed from your tokenizer/model configuration
+                expected_shape = (batch_size, 1, vocab_size)
+                expected_dtype = np.float32
+
             output_buffers[name] = ort.OrtValue.ortvalue_from_shape_and_type(
-                expected_shape, np.float16, 'cuda', 0
+                expected_shape, expected_dtype, 'cuda', 0
             )
             self.io_binding.bind_ortvalue_output(name, output_buffers[name])
 
         print('binded')
-
-        # Run the model with pre-allocated GPU buffers
+        # Run the model using IOBinding.
         self.sess.run_with_iobinding(self.io_binding)
 
-        # Retrieve outputs directly from GPU memory
-        outputs = {name: cp.asarray(output_buffers[name].data_ptr()) for name in self.output_names}
+        # Retrieve outputs directly from the pre-allocated GPU buffers.
+        # You can now use them without copying data from CPU back to GPU.
+        outputs = {}
+        for name in self.output_names:
+            # For example, converting to a CuPy array; alternatively, use the OrtValue directly.
+            outputs[name] = cp.asarray(output_buffers[name].numpy())
         return outputs
 
     
