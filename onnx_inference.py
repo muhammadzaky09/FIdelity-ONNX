@@ -182,12 +182,9 @@ class Llama:
             self.pastvalues[idx] = outputs['past_value']
             
             # del outputs
-        
             # Force Cupy to free unused memory blocks
-            cp.get_default_memory_pool().free_all_blocks()
             
-            import gc
-            gc.collect()
+       
 
         hidden = self.decoder.norm_head(hidden)
         return hidden
@@ -386,8 +383,8 @@ if __name__ == "__main__":
     llama_config = {
         'temperature': 1,
         'topk': 1,
-        'max': 150,
-        'poolsize': 40,
+        'max': 110,
+        'poolsize': 39,
         'fp16': True
     }
 
