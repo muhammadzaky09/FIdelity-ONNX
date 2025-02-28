@@ -28,7 +28,7 @@ PROMPT_DICT = {
 PROMPT = PROMPT_DICT['prompt_no_input']
 
 class Llama:
-    def __init__(self, onnxdir='decoders', config: dict = {}):
+    def __init__(self, onnxdir='decoders/7B16', config: dict = {}):
         if not os.path.exists(onnxdir):
             logger.error('{} not exist'.format(onnxdir))
 
@@ -381,7 +381,7 @@ if __name__ == "__main__":
     }
 
     # Create a persistent Llama instance once.
-    persistent_llama = Llama(onnxdir='decoders/7B', config=llama_config)
+    persistent_llama = Llama(onnxdir='decoders/7B16', config=llama_config)
 
     # Loop over each layer configuration.
     for layer_file in os.listdir("input_llm"):
@@ -391,7 +391,7 @@ if __name__ == "__main__":
         print("Processing layer configuration:", layer_file)
         
         # Loop over different fault models.
-        for fault_model in ['INPUT', 'INPUT16', 'WEIGHT', 'WEIGHT16', 'RANDOM', 'RANDOM_BITFLIP']:
+        for fault_model in ['INPUT', 'INPUT16', 'WEIGHT', 'WEIGHT16', 'RANDOM']:
             # For each bit position (0-7).
             for bit_position in range(8):
                 # Run several experiments for this combination.
