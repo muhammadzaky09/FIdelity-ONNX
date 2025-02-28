@@ -412,7 +412,6 @@ if __name__ == "__main__":
                 # Pick a random prompt.
                 prompt_index = np.random.randint(0, len(prompts))
                 prompt = prompts[prompt_index]
-                prompt = str("Bonjour")
                 print("Prompt:", prompt)
                 for experiment in range(10):
                     # Choose the appropriate faulty model file.
