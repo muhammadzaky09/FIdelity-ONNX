@@ -37,13 +37,13 @@ class Llama:
         self.DECODER_COUNT = 32
         # EOS token
         self.FINISH_TOKEN = 2
-        self.tokenizer = Tokenizer(os.path.join(onnxdir, 'tokenizer.model'))
+        self.tokenizer = Tokenizer()
 
         pool = MemoryPoolSimple(config['poolsize'])
         self.decoder = Decoder(pool, onnxdir, 'decoder-merge-{}.onnx',
                                self.DECODER_COUNT)
         self.config = config
-
+        
         # cache
         self.pastkeys = [None for i in range(self.DECODER_COUNT)]
         self.pastvalues = [None for i in range(self.DECODER_COUNT)]
