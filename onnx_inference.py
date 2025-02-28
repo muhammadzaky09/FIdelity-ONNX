@@ -324,38 +324,38 @@ class Llama:
         return outputs
 
     
-def parse_args():
-    parser = argparse.ArgumentParser(description='llama.onnx onnxruntime demo')
-    parser.add_argument('onnxdir', help='llama 7B onnx model directory.')
-    args = parser.parse_args()
-    return args
+# def parse_args():
+#     parser = argparse.ArgumentParser(description='llama.onnx onnxruntime demo')
+#     parser.add_argument('onnxdir', help='llama 7B onnx model directory.')
+#     args = parser.parse_args()
+#     return args
 
  
-def prepare_guanaco_prompts(dataset_name="mlabonne/guanaco-llama2-1k", num_samples=None):
-    try:
-        # Load the dataset
-        dataset = load_dataset(dataset_name, split="train")
-        print('ya')
-        # Extract prompts from the dataset
-        prompts = []
-        for item in dataset:
-            # Extract just the instruction part from the text
-            text = item['text']
-            if '[INST]' in text and '[/INST]' in text:
-                # Extract text between [INST] and [/INST]
-                instruction = text.split('[INST]')[1].split('[/INST]')[0].strip()
-                prompts.append(instruction)
+# def prepare_guanaco_prompts(dataset_name="mlabonne/guanaco-llama2-1k", num_samples=None):
+#     try:
+#         # Load the dataset
+#         dataset = load_dataset(dataset_name, split="train")
+#         print('ya')
+#         # Extract prompts from the dataset
+#         prompts = []
+#         for item in dataset:
+#             # Extract just the instruction part from the text
+#             text = item['text']
+#             if '[INST]' in text and '[/INST]' in text:
+#                 # Extract text between [INST] and [/INST]
+#                 instruction = text.split('[INST]')[1].split('[/INST]')[0].strip()
+#                 prompts.append(instruction)
         
-        # Sample if requested
-        if num_samples and len(prompts) > num_samples:
+#         # Sample if requested
+#         if num_samples and len(prompts) > num_samples:
           
-            return random.sample(prompts, num_samples)
+#             return random.sample(prompts, num_samples)
             
-        return prompts
+#         return prompts
         
-    except Exception as e:
-        logger.error(f"Error loading dataset {dataset_name}: {e}")
-        return None
+#     except Exception as e:
+#         logger.error(f"Error loading dataset {dataset_name}: {e}")
+#         return None
 
 def extract_decoder_idx(path):
     import os
@@ -369,7 +369,7 @@ if __name__ == "__main__":
     # print(extract_decoder_idx('decoders/7B/decoder-merge-20.onnx'))
     # Directory containing per-layer configuration files.
     # Prepare a set of prompts from the Guanaco dataset.
-    prompts = prepare_guanaco_prompts("mlabonne/guanaco-llama2-1k", num_samples=1000)
+    # prompts = prepare_guanaco_prompts("mlabonne/guanaco-llama2-1k", num_samples=1000)
     # model = SentenceTransformer('all-MiniLM-L6-v2')
 
     print("Starting experiments...")
@@ -378,7 +378,7 @@ if __name__ == "__main__":
     llama_config = {
         'temperature': 0.1,
         'topk': 1,
-        'max': 2000,
+        'max': 200,
         'poolsize': 39,
         'fp16': True
     }
@@ -405,8 +405,8 @@ if __name__ == "__main__":
                 # else:
                 #     faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
                 # Pick a random prompt.
-                prompt_index = np.random.randint(0, len(prompts))
-                prompt = prompts[prompt_index]
+                # prompt_index = np.random.randint(0, len(prompts))
+                # prompt = prompts[prompt_index]
                 prompt = "Good Morning Llama"
          
            
