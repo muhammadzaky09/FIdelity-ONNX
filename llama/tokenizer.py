@@ -1,40 +1,30 @@
-# in llama/tokenizer.py
 from transformers import AutoTokenizer
-from typing import List
 from loguru import logger
-import os
 
 class Tokenizer:
-    def __init__(self, model_path: str):
-        # Ignore model_path and use HuggingFace tokenizer
-        logger.info("Using HuggingFace AutoTokenizer instead of model file")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            "meta-llama/Llama-2-7b-hf",
-            token=""
-        )
-        
-        # Map properties to match original interface
-        self.n_words = len(self.tokenizer.vocab)
-        self.bos_id = self.tokenizer.bos_token_id
-        self.eos_id = self.tokenizer.eos_token_id
-        self.pad_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.eos_id
-        
-        logger.info(f"#words: {self.n_words} - BOS ID: {self.bos_id} - EOS ID: {self.eos_id}")
+    def __init__(self, model_path: str = None):
+        # We ignore model_path and load the pretrained AutoTokenizer directly.
+        logger.info("Loading HuggingFace AutoTokenizer for Llama-2-7b-hf")
+        self.tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", use_fast=True)
+        # Optionally, you can log vocabulary info:
+        logger.info(f"Vocabulary size: {len(self.tokenizer.get_vocab())}")
     
-    def encode(self, s: str, bos: bool, eos: bool) -> List[int]:
-        assert type(s) is str
-        # Get token IDs without special tokens
-        t = self.tokenizer.encode(s, add_special_tokens=False, return_tensors=None)
-        
-        # Add special tokens manually as required
-        if bos:
-            t = [self.bos_id] + t
-        if eos:
-            t = t + [self.eos_id]
-        return t
+    def encode(self, s: str, **kwargs):
+        """
+        Encodes a string into token IDs.
+        By default, special tokens are added automatically.
+        """
+        # AutoTokenizer by default inserts special tokens if its configuration requires it.
+        # return_tensors="pt" returns a PyTorch tensor.
+        input_ids = self.tokenizer(s, return_tensors="pt", **kwargs).input_ids
+        # Convert tensor to list (squeeze to remove batch dimension)
+        return input_ids.squeeze(0).tolist()
     
-    def decode(self, t: List[int]) -> str:
-        # Handle numpy arrays
-        if hasattr(t, 'tolist'):
-            t = t.tolist()
-        return self.tokenizer.decode(t, skip_special_tokens=False)
+    def decode(self, token_ids):
+        """
+        Decodes a list or tensor of token IDs back to a string.
+        """
+        # Convert tensor to list if necessary.
+        if hasattr(token_ids, 'tolist'):
+            token_ids = token_ids.tolist()
+        return self.tokenizer.decode(token_ids, skip_special_tokens=False)

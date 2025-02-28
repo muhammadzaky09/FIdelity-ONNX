@@ -281,12 +281,6 @@ class Llama:
         return decoded
     
     def sample_faulty(self, prompt: str = 'bonjour'):
-        """
-        Faulty run: Runs inference with a one-time fault injection.
-        For the token at fault_config['target_token_idx'], the decoder layer at
-        fault_config['target_decoder_idx'] is processed using the faulty module.
-        Subsequent tokens are generated normally.
-        """
         prompt = prompt.strip()
         format_prompt = PROMPT.format_map({'instruction': prompt})
         input_ids = self.tokenizer.encode(format_prompt, True, False)
@@ -382,8 +376,8 @@ if __name__ == "__main__":
 
     # Llama configuration remains the same.
     llama_config = {
-        'temperature': 1,
-        'topk': None,
+        'temperature': 0.1,
+        'topk': 1,
         'max': 2000,
         'poolsize': 39,
         'fp16': True
@@ -423,8 +417,7 @@ if __name__ == "__main__":
                     # ----- Golden Run (No Fault Injection) -----
                     
                     golden_output = persistent_llama.sample_golden(prompt)
-                    print("Golden Output:")
-                    print(golden_output)
+
  
                     
                     # # ----- Faulty Run (One-Time Fault Injection) -----
