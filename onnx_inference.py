@@ -148,6 +148,7 @@ class Llama:
             attention_mask, (1, seqlen), hidden, pastlen)
 
         for idx in range(self.DECODER_COUNT):
+            print(f"Processing decoder layer {idx}")
             past_key = self.pastkeys[idx]
             past_value = self.pastvalues[idx]
 
