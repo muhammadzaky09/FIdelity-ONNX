@@ -398,12 +398,12 @@ if __name__ == "__main__":
             # For each bit position (0-7).
             for bit_position in range(8):
                 # Run several experiments for this combination.
-                # if fault_model in ['INPUT', 'INPUT16']:
-                #     faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
-                # elif fault_model in ['WEIGHT', 'WEIGHT16']:
-                #     faulty_path = modify_onnx_graph_weight(config, fault_model, bit_position)
-                # else:
-                #     faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
+                if fault_model in ['INPUT', 'INPUT16']:
+                    faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
+                elif fault_model in ['WEIGHT', 'WEIGHT16']:
+                    faulty_path = modify_onnx_graph_weight(config, fault_model, bit_position)
+                else:
+                    faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
                 # Pick a random prompt.
                 # prompt_index = np.random.randint(0, len(prompts))
                 # prompt = prompts[prompt_index]
@@ -412,28 +412,21 @@ if __name__ == "__main__":
            
                 for experiment in range(10):
                     # Choose the appropriate faulty model file.
-                    # print("Faulty model path:", faulty_path)
-                    # print(extract_decoder_idx(faulty_path))
                     print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}, Experiment: {experiment}")
-                    
+                
                     # ----- Golden Run (No Fault Injection) -----
                     
                     golden_output = persistent_llama.sample_golden(prompt)
-
- 
-                    
                     # # ----- Faulty Run (One-Time Fault Injection) -----
                     # # Tokenize the prompt to choose a valid target token index.
-                    # tokenized_prompt = persistent_llama.tokenizer.encode(prompt, bos=True, eos=False)
-                    # target_token = np.random.randint(0, len(tokenized_prompt))
-                    # fault_config = {
-                    #     'enable_fault_injection': True,
-                    #     'target_decoder_idx': extract_decoder_idx(faulty_path),
-                    #     'target_token_idx': 2,  # Token index for fault injection.
-                    #     'faulty_decoder_path': faulty_path
-                    # }
-                    # persistent_llama.fault_config = fault_config
-                    # persistent_llama.enable_fault_injection = True
+                    fault_config = {
+                        'enable_fault_injection': True,
+                        'target_decoder_idx': extract_decoder_idx(faulty_path),
+                        'target_token_idx': 0,  
+                        'faulty_decoder_path': faulty_path
+                    }
+                    persistent_llama.fault_config = fault_config
+                    persistent_llama.enable_fault_injection = True
                     
                     # faulty_output = persistent_llama.sample_faulty(prompt)
                     # print("Faulty Output:")
