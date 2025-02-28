@@ -10,19 +10,32 @@ import math
 
 def ortvalue_to_cupy(ort_value, dtype=np.float16):
     """
-    Wrap the GPU memory of an OrtValue as a CuPy array without copying.
+    Wrap the GPU memory of an OrtValue as a CuPy array without copying,
+    but check that the resulting array is contiguous. If not, force it.
+    If wrapping fails, fall back to the roundtrip copy.
     """
-    # Get pointer, shape, and compute total size in bytes.
-    ptr = ort_value.data_ptr()         # pointer as an integer
-    shape = tuple(ort_value.shape())    # e.g., (batch_size, 1, vocab_size)
-    size_bytes = np.prod(shape) * np.dtype(dtype).itemsize
-    
-    # Wrap the existing GPU memory. We pass the OrtValue as the owner so it stays alive.
-    unowned_mem = cp.cuda.UnownedMemory(ptr, size_bytes, ort_value)
-    memptr = cp.cuda.MemoryPointer(unowned_mem, 0)
-    
-    # Create a CuPy ndarray using the memory pointer.
-    return cp.ndarray(shape, dtype=dtype, memptr=memptr)
+    try:
+        # Get pointer, shape, and compute total size in bytes.
+        ptr = ort_value.data_ptr()         # raw GPU pointer (an integer)
+        shape = tuple(ort_value.shape())    # expected shape, e.g., (batch_size, 1, vocab_size)
+        size_bytes = np.prod(shape) * np.dtype(dtype).itemsize
+        
+        # Wrap the existing GPU memory.
+        unowned_mem = cp.cuda.UnownedMemory(ptr, size_bytes, ort_value)
+        memptr = cp.cuda.MemoryPointer(unowned_mem, 0)
+        arr = cp.ndarray(shape, dtype=dtype, memptr=memptr)
+        
+        # Ensure that the array is C-contiguous.
+        if not arr.flags['C_CONTIGUOUS']:
+            arr = cp.ascontiguousarray(arr)
+        
+        return arr
+    except Exception as e:
+        # If something goes wrong, fall back to a safe roundtrip copy.
+        logger.error("Direct GPU wrapping failed, falling back to roundtrip copy: {}".format(e))
+        np_out = ort_value.numpy()  # this copies to CPU
+        return cp.asarray(np_out)
+
 
 class OrtWrapper:
     def __init__(self, onnxfile: str):
