@@ -378,7 +378,7 @@ if __name__ == "__main__":
     llama_config = {
         'temperature': 0.1,
         'topk': 1,
-        'max': 200,
+        'max': 1000,
         'poolsize': 39,
         'fp16': True
     }
