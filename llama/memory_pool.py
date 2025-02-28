@@ -23,29 +23,24 @@ class OrtWrapper:
         logger.debug('{} loaded'.format(onnxfile))
     
     def _get_ort_type(self, dtype):
+        # Map common Cupy/NumPy dtypes to numpy dtypes expected by ORT.
         if dtype == cp.float32 or dtype == np.float32:
             return np.float32
-        elif dtype == cp.float64 or dtype == np.float64:
-            return np.float64
-        elif dtype == cp.int32 or dtype == np.int32:
-            return np.int32
-        elif dtype == cp.int64 or dtype == np.int64:
-            return np.int64
         elif dtype == cp.uint8 or dtype == np.uint8:
             return np.uint8
         elif dtype == cp.int8 or dtype == np.int8:
             return np.int8
         elif dtype == cp.float16 or dtype == np.float16:
             return np.float16
+
         else:
-            raise ValueError(f"Unsupported dtype: {dtype}")
+            raise ValueError("Unsupported dtype: {}".format(dtype))
 
     def forward(self, _inputs: dict):
         assert len(self.inputs) == len(_inputs)
         self.io_binding.clear_binding_inputs()
         self.io_binding.clear_binding_outputs()
 
-        # Bind input tensors (assuming they are on GPU)
         for name, tensor in _inputs.items():
             self.io_binding.bind_input(
                 name=name,
@@ -56,43 +51,24 @@ class OrtWrapper:
                 buffer_ptr=tensor.data.ptr
             )
 
-        # Pre-allocate GPU buffers for model outputs.
-        # For autoregressive models, each forward pass typically produces one new token,
-        # but for the embed model, the output shape depends on the input sequence length.
-        output_buffers = {}
-        batch_size = list(_inputs.values())[0].shape[0]
-        # Get the sequence length from one of the inputs (e.g. input_ids)
-        seq_len = list(_inputs.values())[0].shape[1]
-
-        for name in self.output_names:
-            # Decide expected shape based on the output name
-            if name == 'embed':
-                # For the embedding model, output shape is (batch_size, seq_len, embed_dim)
-                embed_dim = 4096  # Adjust if necessary
-                expected_shape = (batch_size, seq_len, embed_dim)
-                expected_dtype = np.float16
-            else:
-                # For other outputs (like decoder logits), assume one token is generated
-                vocab_size = 32000  # Adjust as needed from your tokenizer/model configuration
-                expected_shape = (batch_size, 1, vocab_size)
-                expected_dtype = np.float16
-
-            output_buffers[name] = ort.OrtValue.ortvalue_from_shape_and_type(
-                expected_shape, expected_dtype, 'cuda', 0
-            )
-            self.io_binding.bind_ortvalue_output(name, output_buffers[name])
-
+        output_names = [output.name for output in self.sess.get_outputs()]
+        for name in output_names:
+            self.io_binding.bind_output(name, 'cuda')
         print('binded')
-        # Run the model using IOBinding.
         self.sess.run_with_iobinding(self.io_binding)
 
-        # Retrieve outputs directly from the pre-allocated GPU buffers.
-        # You can now use them without copying data from CPU back to GPU.
+        # Retrieve outputs and free cached memory to reduce GPU usage.
         outputs = {}
-        for name in self.output_names:
-            # For example, converting to a CuPy array; alternatively, use the OrtValue directly.
-            outputs[name] = cp.asarray(output_buffers[name].numpy())
+        ort_outputs = self.io_binding.get_outputs()
+        for name, out in zip(self.output_names, ort_outputs):
+            # Get output to CPU as a NumPy array.
+            np_out = out.numpy()
+            # Free any unused GPU memory before allocating the new CuPy array.
+            cp.get_default_memory_pool().free_all_blocks()
+            outputs[name] = cp.asarray(np_out)
+            del np_out
         return outputs
+
 
     
     def __del__(self):
