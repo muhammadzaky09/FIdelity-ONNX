@@ -4,98 +4,30 @@ import onnxruntime as ort
 import numpy as np
 import os
 import sys
-import cupy as cp
+
 import psutil
 import math
-
-def ortvalue_to_cupy(ort_value, dtype=np.float16):
-    """
-    Wrap the GPU memory of an OrtValue as a CuPy array without copying,
-    but check that the resulting array is contiguous. If not, force it.
-    If wrapping fails, fall back to the roundtrip copy.
-    """
-    try:
-        # Get pointer, shape, and compute total size in bytes.
-        ptr = ort_value.data_ptr()         # raw GPU pointer (an integer)
-        shape = tuple(ort_value.shape())    # expected shape, e.g., (batch_size, 1, vocab_size)
-        size_bytes = np.prod(shape) * np.dtype(dtype).itemsize
-        
-        # Wrap the existing GPU memory.
-        unowned_mem = cp.cuda.UnownedMemory(ptr, size_bytes, ort_value)
-        memptr = cp.cuda.MemoryPointer(unowned_mem, 0)
-        arr = cp.ndarray(shape, dtype=dtype, memptr=memptr)
-        
-        # Ensure that the array is C-contiguous.
-        if not arr.flags['C_CONTIGUOUS']:
-            arr = cp.ascontiguousarray(arr)
-        
-        return arr
-    except Exception as e:
-        # If something goes wrong, fall back to a safe roundtrip copy.
-        logger.error("Direct GPU wrapping failed, falling back to roundtrip copy: {}".format(e))
-        np_out = ort_value.numpy()  # this copies to CPU
-        return cp.asarray(np_out)
-
 
 class OrtWrapper:
     def __init__(self, onnxfile: str):
         assert os.path.exists(onnxfile)
         self.onnxfile = onnxfile
-        self.sess = ort.InferenceSession(onnxfile,
-                                         providers=['CUDAExecutionProvider'],
-                                         provider_options=[{'device_id': 0}]
-                                         )
-        self.io_binding = self.sess.io_binding()
+        self.sess = ort.InferenceSession(onnxfile, providers=['CUDAExecutionProvider'])
         self.inputs = self.sess.get_inputs()
         outputs = self.sess.get_outputs()
         self.output_names = [output.name for output in outputs]
         logger.debug('{} loaded'.format(onnxfile))
-    
-    def _get_ort_type(self, dtype):
-        # Map common Cupy/NumPy dtypes to numpy dtypes expected by ORT.
-        if dtype == cp.float32 or dtype == np.float32:
-            return np.float32
-        elif dtype == cp.uint8 or dtype == np.uint8:
-            return np.uint8
-        elif dtype == cp.int8 or dtype == np.int8:
-            return np.int8
-        elif dtype == cp.int64 or dtype == np.int64:
-            return np.int64
-        elif dtype == cp.float16 or dtype == np.float16:
-            return np.float16
-
-        else:
-            raise ValueError("Unsupported dtype: {}".format(dtype))
 
     def forward(self, _inputs: dict):
         assert len(self.inputs) == len(_inputs)
-        self.io_binding.clear_binding_inputs()
-        self.io_binding.clear_binding_outputs()
+        output_tensors = self.sess.run(None, _inputs)
 
-        for name, tensor in _inputs.items():
-            self.io_binding.bind_input(
-                name=name,
-                device_type='cuda',
-                device_id=0,
-                element_type=self._get_ort_type(tensor.dtype),
-                shape=tensor.shape,
-                buffer_ptr=tensor.data.ptr
-            )
+        assert len(output_tensors) == len(self.output_names)
+        output = dict()
+        for i, tensor in enumerate(output_tensors):
+            output[self.output_names[i]] = tensor
 
-        output_names = [output.name for output in self.sess.get_outputs()]
-        for name in output_names:
-            self.io_binding.bind_output(name, 'cuda')
-        self.sess.run_with_iobinding(self.io_binding)
-
-        # Retrieve outputs by wrapping the GPU buffers directly as CuPy arrays.
-        outputs = {}
-        ort_outputs = self.io_binding.get_outputs()
-        for name, out in zip(self.output_names, ort_outputs):
-            outputs[name] = ortvalue_to_cupy(out, dtype=np.float16)
-        return outputs
-
-
-
+        return output
     
     def __del__(self):
         logger.debug('{} unload'.format(self.onnxfile))
