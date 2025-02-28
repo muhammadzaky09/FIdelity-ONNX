@@ -5,4 +5,3 @@ separated/
 decoders/
 input_llm/
 *.onnx
-llama/tokenizer
