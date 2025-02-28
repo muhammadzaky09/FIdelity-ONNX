@@ -2,7 +2,6 @@ import os
 import onnxruntime as ort
 import json
 from loguru import logger
-from llama.tokenizer import Tokenizer
 from llama.decoder import Decoder
 from llama.memory_pool import MemoryPoolSimple
 from llama.utils import npsoftmax, npmultinominal2D

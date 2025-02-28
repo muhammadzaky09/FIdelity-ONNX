@@ -1,9 +1,8 @@
-import cupy as cp
-from loguru import logger
 import numpy as np
+from loguru import logger
 
 # refers to https://github.com/huggingface/transformers/blob/main/src/transformers/generation/logits_process.py 
-def warp_topk(tensor: cp.array, topk: int, fill_value = -float("Inf")):
+def warp_topk(tensor: np.array, topk: int, fill_value = -float("Inf")):
     if topk is None or topk <= 0:
         return tensor
     assert len(tensor.shape) == 2
@@ -14,13 +13,13 @@ def warp_topk(tensor: cp.array, topk: int, fill_value = -float("Inf")):
 
     for idx, pval in enumerate(tensor):
         # for each row, loop
-        non_topk_idx = cp.argpartition(pval, -topk)[0:-topk]
+        non_topk_idx = np.argpartition(pval, -topk)[0:-topk]
         tensor[idx][non_topk_idx] = fill_value
 
     return tensor
 
 
-def warp_temperature(tensor: cp.array, temperature: float):
+def warp_temperature(tensor: np.array, temperature: float):
     EPSILON = 1e-4
     if abs(temperature - 1.0) <= EPSILON:
         return tensor
@@ -32,9 +31,12 @@ def warp_temperature(tensor: cp.array, temperature: float):
 
 # copy from github.com/BLinkDL/ChatRWKV
 def sample_logits(probs, temperature=1.0, top_p=0.85):
-    sorted_probs = cp.sort(probs)[::-1]
-    cumulative_probs = cp.cumsum(sorted_probs)
-    cutoff = sorted_probs[cp.argmax(cumulative_probs > top_p)]
+    sorted_probs = np.sort(probs)[::-1]
+    cumulative_probs = np.cumsum(sorted_probs)
+    cutoff = float(sorted_probs[np.argmax(cumulative_probs > top_p)])
     probs[probs < cutoff] = 0
-    probs = probs / cp.sum(probs)
-    return cp.random.choice(len(probs), p=probs)
+    if temperature != 1.0:
+        probs = probs.pow(1.0 / temperature)
+    probs = probs / np.sum(probs)
+    out = np.random.choice(a=len(probs), p=probs)
+    return out
