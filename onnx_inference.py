@@ -5,7 +5,7 @@ from loguru import logger
 from llama.tokenizer import Tokenizer
 from llama.decoder import Decoder
 from llama.memory_pool import MemoryPoolSimple
-from llama.utils import cpsoftmax, cpmultinominal2D, cpgreedy2D
+from llama.utils import npsoftmax, npmultinominal2D, npgreedy2D
 from llama.logits_process import warp_temperature, warp_topk
 import argparse
 from datasets import load_dataset
@@ -13,6 +13,7 @@ import cupy as cp
 from find_op_pairs import modify_onnx_graph_input, modify_onnx_graph_weight, modify_onnx_graph_random
 import numpy as np
 import random
+from transformer import AutoTokenizer
 
 PROMPT_DICT = {
     "prompt_input":
@@ -37,12 +38,13 @@ class Llama:
         self.DECODER_COUNT = 32
         # EOS token
         self.FINISH_TOKEN = 2
-        self.tokenizer = Tokenizer()
+        self.tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", token="")
 
         pool = MemoryPoolSimple(config['poolsize'])
         self.decoder = Decoder(pool, onnxdir, 'decoder-merge-{}.onnx',
                                self.DECODER_COUNT)
         self.config = config
+        self.device = 'cuda'
 
         # cache
         self.pastkeys = [None for i in range(self.DECODER_COUNT)]
@@ -53,45 +55,49 @@ class Llama:
         pool.check()
 
     # Modified transformers.models.llama.modeling_llama._make_causal_mask with np.array
-    def _make_causal_mask(self, input_ids_shape, dtype, past_key_values_length: int = 0):
-        """
-        Make causal mask for self-attention.
-        Produces a lower triangular matrix (0 for allowed positions, -inf for masked ones),
-        and prepends left-padding if past_key_values_length > 0.
+    def _make_causal_mask(self,
+                          input_ids_shape,
+                          dtype,
+                          past_key_values_length: int = 0):
+        """    
+        Make causal mask used for bi-directional self-attention. 
+        Output triangle-matrix if `past_key_values_length`=0
+        Padding left if `past_key_values_length`>0
         """
         bsz, tgt_len = input_ids_shape
-        # Create a square matrix filled with -inf
-        mask = cp.full((tgt_len, tgt_len), cp.finfo(dtype).min, dtype=dtype)
-        
-        # Create a lower triangular mask: positions where j <= i become True
-        mask_cond = cp.arange(tgt_len)
+        mask = np.full((tgt_len, tgt_len), fill_value=np.finfo(dtype).min)
+
+        mask_cond = np.arange(mask.shape[1])
         cond = mask_cond < (mask_cond + 1).reshape(-1, 1)
-        # Where the condition is True, set to 0; otherwise keep -inf
-        mask = cp.where(cond, 0, mask)
-        
-        # If past keys exist, pad the mask on the left with zeros
+        mask = np.ma.array(mask, mask=cond, fill_value=0).filled()
+        # masked_fill_result = np.ma.masked_fill_(mask, condition_row_array)
+
         if past_key_values_length > 0:
-            left_padding = cp.zeros((tgt_len, past_key_values_length), dtype=dtype)
-            mask = cp.concatenate([left_padding, mask], axis=1)
-        
+            mask = np.concatenate([
+                np.zeros((tgt_len, past_key_values_length), dtype=dtype), mask
+            ],
+                                  axis=1)
+
         return mask.reshape(bsz, 1, tgt_len, tgt_len + past_key_values_length)
 
     def _expand_mask(self, mask, dtype, tgt_len=None):
+        """  
+        Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.  
         """
-        Expands a [bsz, src_len] attention mask into shape 
-        [bsz, 1, tgt_len, src_len] and converts 1-> -inf for masked positions.
-        """
-        mask = cp.asarray(mask)
         bsz, src_len = mask.shape
         if tgt_len is None:
             tgt_len = src_len
-        # Expand dimensions to [bsz, 1, tgt_len, src_len]
-        expanded_mask = cp.expand_dims(mask, axis=1)
-        expanded_mask = cp.broadcast_to(expanded_mask, (bsz, 1, tgt_len, src_len))
-        # Invert the mask: allowed positions become 0, disallowed become 1
+        # expand [bsz,38] to [bsz,1,1,38]
+        expanded_mask = np.expand_dims(mask, axis=1)
+        expanded_mask = np.expand_dims(mask, axis=1)
+        expanded_mask = np.broadcast_to(expanded_mask,
+                                        (bsz, 1, tgt_len, src_len))
         inverted_mask = 1.0 - expanded_mask
-        # Where inverted_mask > 0, replace with -inf; otherwise keep 0.
-        return cp.where(inverted_mask > 0, cp.finfo(dtype).min, inverted_mask)
+
+        cond = inverted_mask > 0
+        return np.ma.array(inverted_mask,
+                           mask=cond,
+                           fill_value=np.finfo(dtype).min).filled()
 
 
     # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
@@ -129,7 +135,7 @@ class Llama:
                 outputs[k] = v
         return outputs
 
-    def decode(self, token: cp.ndarray):
+    def decode(self, token: np.array):
         # embed space
         hidden = self.decoder.embed(token)
         assert hidden.shape[-1] == 4096
@@ -140,10 +146,10 @@ class Llama:
             pastlen = self.pastkeys[0].shape[-2]
         seqlen = hidden.shape[1]
 
-        position_ids = cp.arange(seqlen, dtype=cp.int64).reshape((1, seqlen))
+        position_ids = np.arange(seqlen, dtype=np.int64).reshape((1, seqlen))
         position_ids[0][0] = pastlen
 
-        attention_mask = cp.ones((1, seqlen + pastlen), dtype=cp.float16)
+        attention_mask = np.ones((1, seqlen + pastlen), dtype=np.float32)
         attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, (1, seqlen), hidden, pastlen)
 
@@ -152,8 +158,7 @@ class Llama:
             past_value = self.pastvalues[idx]
 
             if past_key is None:
-                zero_tensor = cp.zeros((1, 32, 0, 128), dtype=cp.float16)
-                print('check!')
+                zero_tensor = np.zeros((1, 32, 0, 128), dtype=np.float32)
                 inputs = {
                     'hidden_in': hidden,
                     'attn_mask': attention_mask,
@@ -173,18 +178,12 @@ class Llama:
             if self.config['fp16']:
                 inputs = self.convert_to_fp16(inputs)
             outputs = self.decoder.decode(inputs, idx)
-            # del inputs
-            # if 'hidden' in locals():
-            #     del hidden
 
             hidden = outputs[
                 'hidden_out']  # [[[ 0.0221,  0.0120,  0.0007,  ..., -0.0614, -0.0625,  0.0494]]]
             self.pastkeys[idx] = outputs['past_key']
             self.pastvalues[idx] = outputs['past_value']
-            
-            # del outputs
-            # Force Cupy to free unused memory blocks
-            
+
         hidden = self.decoder.norm_head(hidden)
         return hidden
     
@@ -253,12 +252,13 @@ class Llama:
         """
         Golden run: Runs full inference with no fault injection.
         """
-        prompt = prompt.strip()
+        # prompt = prompt.strip()
         format_prompt = PROMPT.format_map({'instruction': prompt})
-        format_prompt = str(format_prompt)
         # Tokenize on CPU and move tokens to GPU.
-        input_ids = self.tokenizer.encode(format_prompt)
-        input_ids = cp.array(input_ids, dtype=cp.int64).reshape((1, len(input_ids)))
+        input_ids = self.tokenizer(format_prompt, return_tensors="pt").input_ids.to(self.device)
+        input_ids = np.array(input_ids.cpu(), dtype=np.int64).reshape(
+            (1, input_ids.cpu().shape[1]))
+        
 
         # Reset caches.
         self.pastkeys = [None] * self.DECODER_COUNT
@@ -269,9 +269,9 @@ class Llama:
             logits = self.decode(next_token)
             next_token_scores = logits[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
-            probs = cpsoftmax(next_token_scores.astype(cp.float64), axis=1)
-            next_token = cpgreedy2D(probs).astype(input_ids.dtype)
-            input_ids = cp.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
+            probs = npsoftmax(next_token_scores.astype(cp.float64), axis=1)
+            next_token = npmultinominal2D(probs).astype(input_ids.dtype)
+            input_ids = np.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
 
             if input_ids.shape[-1] >= self.config['max'] or next_token[0, 0] == self.FINISH_TOKEN:
                 break
@@ -302,8 +302,8 @@ class Llama:
 
             next_token_scores = hidden[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
-            probs = cpsoftmax(next_token_scores.astype(cp.float64), axis=1)
-            next_token = cpgreedy2D(probs).astype(input_ids.dtype)
+            probs = npsoftmax(next_token_scores.astype(cp.float64), axis=1)
+            next_token = npgreedy2D(probs).astype(input_ids.dtype)
             input_ids = cp.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
 
             token_count += 1
