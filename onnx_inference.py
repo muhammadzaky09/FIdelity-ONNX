@@ -389,7 +389,7 @@ if __name__ == "__main__":
     }
 
     # Create a persistent Llama instance once.
-    persistent_llama = Llama(onnxdir='decoders/7B16', config=llama_config)
+    
 
     # Loop over each layer configuration.
     for layer_file in os.listdir("input_llm"):
@@ -421,6 +421,7 @@ if __name__ == "__main__":
                     print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}, Experiment: {experiment}")
                     
                     # ----- Golden Run (No Fault Injection) -----
+                    persistent_llama = Llama(onnxdir='decoders/7B16', config=llama_config)
                     golden_output = persistent_llama.sample_golden(prompt)
                     print("Golden Output:")
                     print(golden_output)
