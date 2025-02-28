@@ -6,7 +6,7 @@ class Tokenizer:
         logger.info("Loading HuggingFace AutoTokenizer for Llama-2-7b-hf")
         self.tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", use_fast=True)
         logger.info(f"Vocabulary size: {len(self.tokenizer.get_vocab())}")
-        logger.info(f"Special tokens: {self.tokenizer.all_special_tokens}")
+        logger.info(f"FINISH tokens: { self.tokenizer.eos_token_id}")
     
     def encode(self, s: str, ):
         input_ids = self.tokenizer(s, return_tensors="pt", ).input_ids
