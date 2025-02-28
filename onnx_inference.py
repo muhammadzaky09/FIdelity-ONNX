@@ -4,11 +4,11 @@ import json
 from loguru import logger
 from llama.decoder import Decoder
 from llama.memory_pool import MemoryPoolSimple
-from llama.utils import npsoftmax, npmultinominal2D
+from llama.utils import npsoftmax, npmultinominal2D, npgreedy2D
 from llama.logits_process import warp_temperature, warp_topk
 import argparse
 from datasets import load_dataset
-import cupy as cp
+
 from find_op_pairs import modify_onnx_graph_input, modify_onnx_graph_weight, modify_onnx_graph_random
 import numpy as np
 import random
@@ -186,7 +186,7 @@ class Llama:
         hidden = self.decoder.norm_head(hidden)
         return hidden
     
-    def decode_faulty(self, token: cp.ndarray):
+    def decode_faulty(self, token: np.ndarray):
         """
         Faulty decode: Runs the decoder layers as normal except for one layer.
         At the target decoder layer (specified in fault_config), the normal call is
@@ -198,10 +198,10 @@ class Llama:
 
         pastlen = 0 if self.pastkeys[0] is None else self.pastkeys[0].shape[-2]
         seqlen = hidden.shape[1]
-        position_ids = cp.arange(seqlen, dtype=cp.int64).reshape((1, seqlen))
+        position_ids = np.arange(seqlen, dtype=np.int64).reshape((1, seqlen))
         position_ids[0][0] = pastlen
 
-        attention_mask = cp.ones((1, seqlen + pastlen), dtype=cp.float16)
+        attention_mask = np.ones((1, seqlen + pastlen), dtype=np.float32)
         attention_mask = self._prepare_decoder_attention_mask(attention_mask, (1, seqlen), hidden, pastlen)
 
         for idx in range(self.DECODER_COUNT):
@@ -209,7 +209,7 @@ class Llama:
             past_value = self.pastvalues[idx]
 
             if past_key is None:
-                zero_tensor = cp.zeros((1, 32, 0, 128), dtype=cp.float16)
+                zero_tensor = np.zeros((1, 32, 0, 128), dtype=np.float32)
                 inputs = {
                     'hidden_in': hidden,
                     'attn_mask': attention_mask,
@@ -268,8 +268,8 @@ class Llama:
             logits = self.decode(next_token)
             next_token_scores = logits[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
-            probs = npsoftmax(next_token_scores.astype(cp.float64), axis=1)
-            next_token = npmultinominal2D(probs).astype(input_ids.dtype)
+            probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
+            next_token = npgreedy2D(probs).astype(input_ids.dtype)
             input_ids = np.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
 
             if input_ids.shape[-1] >= self.config['max'] or next_token[0, 0] == self.FINISH_TOKEN:
@@ -281,29 +281,29 @@ class Llama:
         return decoded
     
     def sample_faulty(self, prompt: str = 'bonjour'):
-        prompt = prompt.strip()
         format_prompt = PROMPT.format_map({'instruction': prompt})
-        input_ids = self.tokenizer.encode(format_prompt)
-        input_ids = cp.array(input_ids, dtype=cp.int64).reshape((1, len(input_ids)))
+        input_ids = self.tokenizer(format_prompt, return_tensors="pt").input_ids.to(self.device)
+        input_ids = np.array(input_ids.cpu(), dtype=np.int64).reshape(
+            (1, input_ids.cpu().shape[1]))
 
         # Reset caches.
         self.pastkeys = [None] * self.DECODER_COUNT
         self.pastvalues = [None] * self.DECODER_COUNT
 
         token_count = 0  # CPU-based token counter.
-
+        next_token = input_ids
         while True:
             # At the target token generation, use decode_faulty().
             if token_count == self.fault_config['target_token_idx']:
-                hidden = self.decode_faulty(input_ids)
+                logits = self.decode_faulty(next_token)
             else:
-                hidden = self.decode(input_ids)
+                logits = self.decode(next_token)
 
-            next_token_scores = hidden[:, -1, :]
+            next_token_scores = logits[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
-            probs = npsoftmax(next_token_scores.astype(cp.float64), axis=1)
+            probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
             next_token = npgreedy2D(probs).astype(input_ids.dtype)
-            input_ids = cp.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
+            input_ids = np.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
 
             token_count += 1
 

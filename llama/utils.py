@@ -30,6 +30,8 @@ def npmultinominal2D(x):
 
     return ret
 
+def npgreedy2D(x):
+    return np.argmax(x, axis=1).reshape(x.shape[0], 1)
 
 if __name__ == '__main__':
     data = np.ones((12, 8))
