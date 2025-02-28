@@ -377,7 +377,7 @@ if __name__ == "__main__":
         'topk': 1,
         'max': 1000,
         'poolsize': 40,
-        'fp16': False
+        'fp16': True
     }
 
     # Create a persistent Llama instance once.
