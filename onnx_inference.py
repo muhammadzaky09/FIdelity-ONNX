@@ -373,7 +373,7 @@ if __name__ == "__main__":
 
     # Llama configuration remains the same.
     llama_config = {
-        'temperature': 0.0,
+        'temperature': 1,
         'topk': 1,
         'max': 1000,
         'poolsize': 40,
