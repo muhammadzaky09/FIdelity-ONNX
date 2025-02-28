@@ -68,12 +68,12 @@ class OrtWrapper:
                 # For the embedding model, output shape is (batch_size, seq_len, embed_dim)
                 embed_dim = 4096  # Adjust if necessary
                 expected_shape = (batch_size, seq_len, embed_dim)
-                expected_dtype = np.float32
+                expected_dtype = np.float16
             else:
                 # For other outputs (like decoder logits), assume one token is generated
                 vocab_size = 32000  # Adjust as needed from your tokenizer/model configuration
                 expected_shape = (batch_size, 1, vocab_size)
-                expected_dtype = np.float32
+                expected_dtype = np.float16
 
             output_buffers[name] = ort.OrtValue.ortvalue_from_shape_and_type(
                 expected_shape, expected_dtype, 'cuda', 0
