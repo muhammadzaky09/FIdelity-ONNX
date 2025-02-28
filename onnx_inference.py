@@ -153,6 +153,7 @@ class Llama:
 
             if past_key is None:
                 zero_tensor = cp.zeros((1, 32, 0, 128), dtype=cp.float16)
+                print('check!')
                 inputs = {
                     'hidden_in': hidden,
                     'attn_mask': attention_mask,
@@ -213,7 +214,6 @@ class Llama:
 
             if past_key is None:
                 zero_tensor = cp.zeros((1, 32, 0, 128), dtype=cp.float16)
-                print('check!')
                 inputs = {
                     'hidden_in': hidden,
                     'attn_mask': attention_mask,
