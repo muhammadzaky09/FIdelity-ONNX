@@ -31,9 +31,9 @@ def cpgreedy2D(x):
 
 
 
-if __name__ == '__main__':
-    data = cp.ones((12, 8))
-    data1 = cpsoftmax(data, -1)
+# if __name__ == '__main__':
+#     data = cp.ones((12, 8))
+#     data1 = cpsoftmax(data, -1)
 
-    data2 = cpmultinominal2D(data1)
-    print(data2)
+#     data2 = cpmultinominal2D(data1)
+#     print(data2)
