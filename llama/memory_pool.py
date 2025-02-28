@@ -8,6 +8,22 @@ import cupy as cp
 import psutil
 import math
 
+def ortvalue_to_cupy(ort_value, dtype=np.float16):
+    """
+    Wrap the GPU memory of an OrtValue as a CuPy array without copying.
+    """
+    # Get pointer, shape, and compute total size in bytes.
+    ptr = ort_value.data_ptr()         # pointer as an integer
+    shape = tuple(ort_value.shape())    # e.g., (batch_size, 1, vocab_size)
+    size_bytes = np.prod(shape) * np.dtype(dtype).itemsize
+    
+    # Wrap the existing GPU memory. We pass the OrtValue as the owner so it stays alive.
+    unowned_mem = cp.cuda.UnownedMemory(ptr, size_bytes, ort_value)
+    memptr = cp.cuda.MemoryPointer(unowned_mem, 0)
+    
+    # Create a CuPy ndarray using the memory pointer.
+    return cp.ndarray(shape, dtype=dtype, memptr=memptr)
+
 class OrtWrapper:
     def __init__(self, onnxfile: str):
         assert os.path.exists(onnxfile)
@@ -58,17 +74,13 @@ class OrtWrapper:
             self.io_binding.bind_output(name, 'cuda')
         self.sess.run_with_iobinding(self.io_binding)
 
-        # Retrieve outputs and free cached memory to reduce GPU usage.
+        # Retrieve outputs by wrapping the GPU buffers directly as CuPy arrays.
         outputs = {}
         ort_outputs = self.io_binding.get_outputs()
         for name, out in zip(self.output_names, ort_outputs):
-            # Get output to CPU as a NumPy array.
-            np_out = out.numpy()
-            # Free any unused GPU memory before allocating the new CuPy array.
-            cp.get_default_memory_pool().free_all_blocks()
-            outputs[name] = cp.asarray(np_out)
-            del np_out
+            outputs[name] = ortvalue_to_cupy(out, dtype=np.float32)
         return outputs
+
 
 
     

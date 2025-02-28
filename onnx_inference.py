@@ -172,16 +172,16 @@ class Llama:
             if self.config['fp16']:
                 inputs = self.convert_to_fp16(inputs)
             outputs = self.decoder.decode(inputs, idx)
-            del inputs
-            if 'hidden' in locals():
-                del hidden
+            # del inputs
+            # if 'hidden' in locals():
+            #     del hidden
 
             hidden = outputs[
                 'hidden_out']  # [[[ 0.0221,  0.0120,  0.0007,  ..., -0.0614, -0.0625,  0.0494]]]
             self.pastkeys[idx] = outputs['past_key']
             self.pastvalues[idx] = outputs['past_value']
             
-            del outputs
+            # del outputs
         
             # Force Cupy to free unused memory blocks
             cp.get_default_memory_pool().free_all_blocks()
@@ -261,7 +261,6 @@ class Llama:
         format_prompt = PROMPT.format_map({'instruction': prompt})
         # Tokenize on CPU and move tokens to GPU.
         input_ids = self.tokenizer.encode(format_prompt, True, False)
-        print(input_ids)
         input_ids = cp.array(input_ids, dtype=cp.int64).reshape((1, len(input_ids)))
 
         # Reset caches.
