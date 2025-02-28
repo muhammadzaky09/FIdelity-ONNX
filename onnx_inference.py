@@ -270,7 +270,7 @@ class Llama:
             next_token_scores = hidden[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
             probs = cpsoftmax(next_token_scores.astype(cp.float64), axis=1)
-            next_token = next_token = cpgreedy2D(probs).astype(input_ids.dtype)
+            next_token = next_token = cpmultinominal2D(probs).astype(input_ids.dtype)
             input_ids = cp.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
 
             if input_ids.shape[-1] >= self.config['max'] or next_token[0, 0] == self.FINISH_TOKEN:
@@ -307,7 +307,7 @@ class Llama:
             next_token_scores = hidden[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
             probs = cpsoftmax(next_token_scores.astype(cp.float64), axis=1)
-            next_token = next_token = cpgreedy2D(probs).astype(input_ids.dtype)
+            next_token = next_token = cpmultinominal2D(probs).astype(input_ids.dtype)
             input_ids = cp.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
 
             token_count += 1
@@ -383,7 +383,7 @@ if __name__ == "__main__":
     llama_config = {
         'temperature': 0.1,
         'topk': 40,
-        'max': 110,
+        'max': 2000,
         'poolsize': 39,
         'fp16': True
     }
