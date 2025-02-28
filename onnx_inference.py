@@ -428,22 +428,22 @@ if __name__ == "__main__":
                     print(golden_output)
  
                     
-                    # ----- Faulty Run (One-Time Fault Injection) -----
-                    # Tokenize the prompt to choose a valid target token index.
-                    tokenized_prompt = persistent_llama.tokenizer.encode(prompt, bos=True, eos=False)
-                    target_token = np.random.randint(0, len(tokenized_prompt))
-                    fault_config = {
-                        'enable_fault_injection': True,
-                        'target_decoder_idx': extract_decoder_idx(faulty_path),
-                        'target_token_idx': 2,  # Token index for fault injection.
-                        'faulty_decoder_path': faulty_path
-                    }
-                    persistent_llama.fault_config = fault_config
-                    persistent_llama.enable_fault_injection = True
+                    # # ----- Faulty Run (One-Time Fault Injection) -----
+                    # # Tokenize the prompt to choose a valid target token index.
+                    # tokenized_prompt = persistent_llama.tokenizer.encode(prompt, bos=True, eos=False)
+                    # target_token = np.random.randint(0, len(tokenized_prompt))
+                    # fault_config = {
+                    #     'enable_fault_injection': True,
+                    #     'target_decoder_idx': extract_decoder_idx(faulty_path),
+                    #     'target_token_idx': 2,  # Token index for fault injection.
+                    #     'faulty_decoder_path': faulty_path
+                    # }
+                    # persistent_llama.fault_config = fault_config
+                    # persistent_llama.enable_fault_injection = True
                     
-                    faulty_output = persistent_llama.sample_faulty(prompt)
-                    print("Faulty Output:")
-                    print(faulty_output)
+                    # faulty_output = persistent_llama.sample_faulty(prompt)
+                    # print("Faulty Output:")
+                    # print(faulty_output)
                     
                 
                     
