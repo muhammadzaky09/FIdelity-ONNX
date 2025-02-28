@@ -30,6 +30,8 @@ class OrtWrapper:
             return np.uint8
         elif dtype == cp.int8 or dtype == np.int8:
             return np.int8
+        elif dtype == cp.int64 or dtype == np.int64:
+            return np.int64
         elif dtype == cp.float16 or dtype == np.float16:
             return np.float16
 
