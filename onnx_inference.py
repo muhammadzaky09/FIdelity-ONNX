@@ -13,7 +13,7 @@ import cupy as cp
 from find_op_pairs import modify_onnx_graph_input, modify_onnx_graph_weight, modify_onnx_graph_random
 import numpy as np
 import random
-from transformer import AutoTokenizer
+from transformers import AutoTokenizer
 
 PROMPT_DICT = {
     "prompt_input":
