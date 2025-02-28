@@ -26,12 +26,6 @@ class OrtWrapper:
         # Map common Cupy/NumPy dtypes to numpy dtypes expected by ORT.
         if dtype == cp.float32 or dtype == np.float32:
             return np.float32
-        elif dtype == cp.float64 or dtype == np.float64:
-            return np.float64
-        elif dtype == cp.int32 or dtype == np.int32:
-            return np.int32
-        elif dtype == cp.int64 or dtype == np.int64:
-            return np.int64
         elif dtype == cp.uint8 or dtype == np.uint8:
             return np.uint8
         elif dtype == cp.int8 or dtype == np.int8:
@@ -47,6 +41,7 @@ class OrtWrapper:
         self.io_binding.clear_binding_inputs()
         self.io_binding.clear_binding_outputs()
     
+        # Bind input tensors (already on GPU)
         for name, tensor in _inputs.items():
             self.io_binding.bind_input(
                 name=name,
@@ -57,20 +52,25 @@ class OrtWrapper:
                 buffer_ptr=tensor.data.ptr
             )
 
-        # Bind outputs (let ORT allocate on GPU)
-        output_names = [output.name for output in self.sess.get_outputs()]
-        for name in output_names:
-            self.io_binding.bind_output(name, 'cuda')
+        # Pre-allocate GPU buffers for model outputs
+        output_buffers = {}
+        batch_size = list(_inputs.values())[0].shape[0]  # Assuming consistent batch size
+        vocab_size = 32000  # Adjust based on your tokenizer/model
+
+        expected_shape = (batch_size, 1, vocab_size)  # Llama-2 generates one token at a time
+        for name in self.output_names:
+            output_buffers[name] = ort.OrtValue.ortvalue_from_shape_and_type(
+                expected_shape, np.float16, 'cuda', 0
+            )
+            self.io_binding.bind_ortvalue_output(name, output_buffers[name])
+
         print('binded')
-        # Run the model
+
+        # Run the model with pre-allocated GPU buffers
         self.sess.run_with_iobinding(self.io_binding)
 
-        # Copy outputs to CuPy arrays
-        outputs = {}
-        ort_outputs = self.io_binding.get_outputs()
-        for name, out in zip(self.output_names, ort_outputs):
-            # Convert the OrtValue to a numpy array first, then to a CuPy array
-            outputs[name] = cp.asarray(out.numpy())
+        # Retrieve outputs directly from GPU memory
+        outputs = {name: cp.asarray(output_buffers[name].data_ptr()) for name in self.output_names}
         return outputs
 
     
