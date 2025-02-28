@@ -386,7 +386,7 @@ if __name__ == "__main__":
     llama_config = {
         'temperature': 1,
         'topk': 1,
-        'max': 50,
+        'max': 100,
         'poolsize': 40,
         'fp16': True
     }
@@ -435,7 +435,7 @@ if __name__ == "__main__":
                     fault_config = {
                         'enable_fault_injection': True,
                         'target_decoder_idx': extract_decoder_idx(faulty_path),
-                        'target_token_idx': 1,  # Token index for fault injection.
+                        'target_token_idx': 2,  # Token index for fault injection.
                         'faulty_decoder_path': faulty_path
                     }
                     persistent_llama.fault_config = fault_config
