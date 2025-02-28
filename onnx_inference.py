@@ -177,6 +177,11 @@ class Llama:
                 'hidden_out']  # [[[ 0.0221,  0.0120,  0.0007,  ..., -0.0614, -0.0625,  0.0494]]]
             self.pastkeys[idx] = outputs['past_key']
             self.pastvalues[idx] = outputs['past_value']
+            
+            del outputs
+        
+            # Force Cupy to free unused memory blocks
+            cp.get_default_memory_pool().free_all_blocks()
 
         hidden = self.decoder.norm_head(hidden)
         return hidden
