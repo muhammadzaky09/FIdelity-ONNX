@@ -56,7 +56,6 @@ class OrtWrapper:
         output_names = [output.name for output in self.sess.get_outputs()]
         for name in output_names:
             self.io_binding.bind_output(name, 'cuda')
-        print('binded')
         self.sess.run_with_iobinding(self.io_binding)
 
         # Retrieve outputs and free cached memory to reduce GPU usage.
