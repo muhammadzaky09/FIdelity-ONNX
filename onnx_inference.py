@@ -266,7 +266,7 @@ class Llama:
         while True:
             # Use the standard (golden) decode.
             logits = self.decode(next_token)
-            next_token_scores = next_token[:, -1, :]
+            next_token_scores = logits[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
             probs = cpsoftmax(next_token_scores.astype(cp.float64), axis=1)
             next_token = cpgreedy2D(probs).astype(input_ids.dtype)
