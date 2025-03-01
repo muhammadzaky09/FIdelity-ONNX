@@ -263,10 +263,12 @@ class Llama:
         # Reset caches.
         self.pastkeys = [None] * self.DECODER_COUNT
         self.pastvalues = [None] * self.DECODER_COUNT
+        all_logits = []
         next_token = input_ids
         while True:
             # Use the standard (golden) decode.
             logits = self.decode(next_token)
+            all_logits.append(logits)
             next_token_scores = logits[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
@@ -279,7 +281,7 @@ class Llama:
         decoded = self.tokenizer.decode(input_ids[0].tolist())
         out = str(decoded.split('Response:')[1])
         logger.debug('Q: {} A: {}'.format(prompt, out))
-        return decoded
+        return decoded, all_logits
     
     def sample_faulty(self, prompt: str = 'bonjour'):
         format_prompt = PROMPT.format_map({'instruction': prompt})
@@ -292,6 +294,7 @@ class Llama:
         self.pastvalues = [None] * self.DECODER_COUNT
 
         token_count = 0  # CPU-based token counter.
+        all_logits = []
         next_token = input_ids
         while True:
             # At the target token generation, use decode_faulty().
@@ -299,7 +302,7 @@ class Llama:
                 logits = self.decode_faulty(next_token)
             else:
                 logits = self.decode(next_token)
-
+            all_logits.append(logits)
             next_token_scores = logits[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
@@ -314,7 +317,7 @@ class Llama:
         decoded = self.tokenizer.decode(input_ids[0].tolist())
         out = str(decoded.split('Response:')[1])
         logger.debug('Q: {} A: {}'.format(prompt, out))
-        return decoded
+        return decoded, all_logits
 
 
     def _faulty_decode(self, inputs: dict, idx: int):
@@ -424,7 +427,7 @@ if __name__ == "__main__":
                 
                     # ----- Golden Run (No Fault Injection) -----
                     print("Golden Run")
-                    golden_output = persistent_llama.sample_golden(prompt)
+                    golden_output, golden_logits = persistent_llama.sample_golden(prompt)
                     # # ----- Faulty Run (One-Time Fault Injection) -----
                     # # Tokenize the prompt to choose a valid target token index.
                     fault_config = {
@@ -436,6 +439,12 @@ if __name__ == "__main__":
                     persistent_llama.fault_config = fault_config
                     persistent_llama.enable_fault_injection = True
                     print("Faulty Run")
-                    faulty_output = persistent_llama.sample_faulty(prompt)
+                    faulty_output, faulty_logits = persistent_llama.sample_faulty(prompt)
+                    
+                    # Compare logits layer by layer
+                    for i, (g_logit, f_logit) in enumerate(zip(golden_logits, faulty_logits)):
+                        diff = np.abs(g_logit - f_logit)
+                        print(f"Layer {i} - Max Logit Difference: {np.max(diff)}")
+                        print(f"Layer {i} - Mean Logit Difference: {np.mean(diff)}")
                     
                     # Evaluation with cosine similarity, etc.
