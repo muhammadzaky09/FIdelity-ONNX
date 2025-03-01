@@ -231,6 +231,7 @@ class Llama:
 
             # If this is the target decoder layer, call the faulty module.
             if idx == self.fault_config['target_decoder_idx']:
+                print('Hm!')
                 outputs = self._faulty_decode(inputs, idx)
             else:
                 outputs = self.decoder.decode(inputs, idx)
@@ -378,7 +379,7 @@ if __name__ == "__main__":
 
     # Llama configuration remains the same.
     llama_config = {
-        'temperature': 0.000000000001,
+        'temperature': 2e-4,
         'topk': 1,
         'max': 1000,
         'poolsize': 39,
