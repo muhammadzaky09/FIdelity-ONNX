@@ -399,6 +399,7 @@ if __name__ == "__main__":
         for fault_model in ['INPUT', 'INPUT16', 'WEIGHT', 'WEIGHT16', 'RANDOM']:
             # For each bit position (0-7).
             for bit_position in range(8):
+                    
                 # Run several experiments for this combination.
                 if fault_model in ['INPUT', 'INPUT16']:
                     faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
@@ -406,6 +407,10 @@ if __name__ == "__main__":
                     faulty_path = modify_onnx_graph_weight(config, fault_model, bit_position)
                 else:
                     faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
+                    
+                # If a faulty decoder is already loaded for this path, unload it.
+                if faulty_path is not None and faulty_path in persistent_llama.faulty_decoders:
+                    del persistent_llama.faulty_decoders[faulty_path]
                 # Pick a random prompt.
                 # prompt_index = np.random.randint(0, len(prompts))
                 # prompt = prompts[prompt_index]
@@ -417,7 +422,7 @@ if __name__ == "__main__":
                     print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}, Experiment: {experiment}")
                 
                     # ----- Golden Run (No Fault Injection) -----
-                    
+                    print("Golden Run")
                     golden_output = persistent_llama.sample_golden(prompt)
                     # # ----- Faulty Run (One-Time Fault Injection) -----
                     # # Tokenize the prompt to choose a valid target token index.
@@ -429,7 +434,7 @@ if __name__ == "__main__":
                     }
                     persistent_llama.fault_config = fault_config
                     persistent_llama.enable_fault_injection = True
-                    
+                    print("Faulty Run")
                     faulty_output = persistent_llama.sample_faulty(prompt)
                     
                     # Evaluation with cosine similarity, etc.
