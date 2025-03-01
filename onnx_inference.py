@@ -8,7 +8,7 @@ from llama.utils import npsoftmax, npmultinominal2D, npgreedy2D
 from llama.logits_process import warp_temperature, warp_topk
 import argparse
 from datasets import load_dataset
-
+import csv
 from find_op_pairs import modify_onnx_graph_input, modify_onnx_graph_weight, modify_onnx_graph_random
 import numpy as np
 import random
@@ -441,10 +441,19 @@ if __name__ == "__main__":
                     print("Faulty Run")
                     faulty_output, faulty_logits = persistent_llama.sample_faulty(prompt)
                     
-                    # Compare logits layer by layer
+                    diff_data = []  # to store (layer_index, max_diff, mean_diff)
                     for i, (g_logit, f_logit) in enumerate(zip(golden_logits, faulty_logits)):
                         diff = np.abs(g_logit - f_logit)
-                        print(f"Layer {i} - Max Logit Difference: {np.max(diff)}")
-                        print(f"Layer {i} - Mean Logit Difference: {np.mean(diff)}")
+                        max_diff = np.max(diff)
+                        mean_diff = np.mean(diff)
+                        diff_data.append((i, max_diff, mean_diff))
+                        print(f"Layer {i} - Max: {max_diff} Mean: {mean_diff}")
+
+                    # Write results to a CSV file
+                    with open('logit_differences.csv', 'w', newline='') as csvfile:
+                        writer = csv.writer(csvfile)
+                        writer.writerow(['Step', 'Max Difference', 'Mean Difference'])
+                        for row in diff_data:
+                            writer.writerow(row)
                     
                     # Evaluation with cosine similarity, etc.
