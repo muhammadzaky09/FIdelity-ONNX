@@ -311,6 +311,8 @@ class Llama:
                 break
 
         decoded = self.tokenizer.decode(input_ids[0].tolist())
+        out = str(decoded.split('Response:')[1])
+        logger.debug('Q: {} A: {}'.format(prompt, out))
         return decoded
 
 
@@ -428,10 +430,6 @@ if __name__ == "__main__":
                     persistent_llama.fault_config = fault_config
                     persistent_llama.enable_fault_injection = True
                     
-                    # faulty_output = persistent_llama.sample_faulty(prompt)
-                    # print("Faulty Output:")
-                    # print(faulty_output)
-                    
-                
+                    faulty_output = persistent_llama.sample_faulty(prompt)
                     
                     # Evaluation with cosine similarity, etc.
