@@ -1,7 +1,3 @@
-checkpoint/
-weights/
-try/
-separated/
 decoders/
 input_llm/
 *.onnx

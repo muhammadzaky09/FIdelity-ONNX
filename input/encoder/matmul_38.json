@@ -1,9 +1,0 @@
-{
-	"target_layer"		: "MatMul_38",
-	"input_tensor"		: "Round_74_out0",
-	"weight_tensor"		: "Round_28_out0",
-	"bias_tensor"		: "None",
-	"output_tensor"		: "MatMul_38_out0",
-	"module"		: "Encoder/FirstFC",
-	"model_name"		: "./try/encoder_try_cleaned.onnx"
-}

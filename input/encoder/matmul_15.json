@@ -1,9 +1,0 @@
-{
-	"target_layer"		: "MatMul_15",
-	"input_tensor"		: "Round_51_out0",
-	"weight_tensor"		: "Round_11_out0",
-	"bias_tensor"		: "None",
-	"output_tensor"		: "MatMul_15_out0",
-	"module"		: "Encoder/SecondFC",
-	"model_name"		: "./try/encoder_try_cleaned.onnx"
-}

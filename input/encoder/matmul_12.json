@@ -1,9 +1,0 @@
-{
-	"target_layer"		: "MatMul_12",
-	"input_tensor"		: "Round_48_out0",
-	"weight_tensor"		: "Round_47_out0",
-	"bias_tensor"		: "None",
-	"output_tensor"		: "MatMul_12_out0",
-	"module"		: "Encoder/SecondMatMul",
-	"model_name"		: "./try/encoder_try_cleaned.onnx"
-}

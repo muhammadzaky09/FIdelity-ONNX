@@ -1,9 +1,0 @@
-{
-	"target_layer"		: "MatMul_67",
-	"input_tensor"		: "Round_128_out0",
-	"weight_tensor"		: "Round_69_out0",
-	"bias_tensor"		: "None",
-	"output_tensor"		: "MatMul_67_out0",
-	"module"		: "Decoder/FirstMatMul",
-	"model_name"		: "./try/decoder_try_cleaned.onnx"
-}
