@@ -458,9 +458,10 @@ if __name__ == "__main__":
                 for experiment in range(10):
                     # Choose the appropriate faulty model file.
                     print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}, Experiment: {experiment}")
+                    target_token_idx = np.random.randint(0, 10)
                     fault_config = {
                         'target_decoder_idx': extract_decoder_idx(faulty_path),
-                        'target_token_idx': 0,  
+                        'target_token_idx': target_token_idx,  
                         'faulty_decoder_path': faulty_path
                     }
                     persistent_llama.fault_config = fault_config
@@ -474,7 +475,8 @@ if __name__ == "__main__":
                     faulty_output, faulty_token, faulty_logits = persistent_llama.sample_faulty(prompt)
                     
                     golden_token_text = persistent_llama.tokenizer.decode([golden_token]) 
-                    faulty_token_text = persistent_llama.tokenizer.decode([faulty_token]) 
+                    faulty_token_text = persistent_llama.tokenizer.decode([faulty_token])
+                    print(f"Golden Token: {golden_token_text}, Faulty Token: {faulty_token_text}") 
                     
                     csv_filename = 'fault_injection_results.csv'
                     file_exists = os.path.isfile(csv_filename)
