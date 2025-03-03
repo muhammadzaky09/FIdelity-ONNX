@@ -13,6 +13,7 @@ from find_op_pairs import modify_onnx_graph_input, modify_onnx_graph_weight, mod
 import numpy as np
 import random
 from transformers import AutoTokenizer
+from datetime import datetime
 
 PROMPT_DICT = {
     "prompt_input":
@@ -252,36 +253,53 @@ class Llama:
         """
         Golden run: Runs full inference with no fault injection.
         """
-        # prompt = prompt.strip()
         format_prompt = PROMPT.format_map({'instruction': prompt})
-        # Tokenize on CPU and move tokens to GPU.
         input_ids = self.tokenizer(format_prompt, return_tensors="pt").input_ids.to(self.device)
         input_ids = np.array(input_ids.cpu(), dtype=np.int64).reshape(
             (1, input_ids.cpu().shape[1]))
         
-
-        # Reset caches.
+        # Reset caches
         self.pastkeys = [None] * self.DECODER_COUNT
         self.pastvalues = [None] * self.DECODER_COUNT
-        all_logits = []
+        
+        generated_tokens = []
+        golden_token_logit = None  # Will only be set if we reach target_token_idx
+        token_count = 0
         next_token = input_ids
+        
         while True:
-            # Use the standard (golden) decode.
+            # Use the standard (golden) decode
             logits = self.decode(next_token)
-            all_logits.append(logits)
             next_token_scores = logits[:, -1, :]
+            
+            # If this is our target token, save its logit before warping
+            if token_count == self.fault_config['target_token_idx']:
+                # We'll capture the logit after we know which token was selected
+                golden_token_logit = next_token_scores.copy()
+            
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
             next_token = npgreedy2D(probs).astype(input_ids.dtype)
+            token_id = int(next_token[0, 0])
+            
+            
+            generated_tokens.append(token_id)
             input_ids = np.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
+            token_count += 1
 
-            if input_ids.shape[-1] >= self.config['max'] or next_token[0, 0] == self.FINISH_TOKEN:
+            if input_ids.shape[-1] >= self.config['max'] or token_id == self.FINISH_TOKEN:
                 break
 
         decoded = self.tokenizer.decode(input_ids[0].tolist())
+        
+        # Get the token at target position
+        golden_token = None
+        if self.fault_config['target_token_idx'] < len(generated_tokens):
+            golden_token = generated_tokens[self.fault_config['target_token_idx']]
         out = str(decoded.split('Response:')[1])
         logger.debug('Q: {} A: {}'.format(prompt, out))
-        return decoded, all_logits
+            
+        return out, golden_token, golden_token_logit
     
     def sample_faulty(self, prompt: str = 'bonjour'):
         format_prompt = PROMPT.format_map({'instruction': prompt})
@@ -289,35 +307,48 @@ class Llama:
         input_ids = np.array(input_ids.cpu(), dtype=np.int64).reshape(
             (1, input_ids.cpu().shape[1]))
 
-        # Reset caches.
+        # Reset caches
         self.pastkeys = [None] * self.DECODER_COUNT
         self.pastvalues = [None] * self.DECODER_COUNT
 
-        token_count = 0  # CPU-based token counter.
-        all_logits = []
+        token_count = 0
+        generated_tokens = []
+        faulty_token_logit = None  # Will only be set at the target token
         next_token = input_ids
+        
         while True:
-            # At the target token generation, use decode_faulty().
+            # At the target token generation, use decode_faulty
             if token_count == self.fault_config['target_token_idx']:
                 logits = self.decode_faulty(next_token)
+                faulty_token_logit = logits[:, -1, :].copy()
             else:
                 logits = self.decode(next_token)
-            all_logits.append(logits)
+                
             next_token_scores = logits[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
             next_token = npgreedy2D(probs).astype(input_ids.dtype)
+            token_id = int(next_token[0, 0])
+            
+           
+            
+            generated_tokens.append(token_id)
             input_ids = np.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
-
             token_count += 1
 
-            if input_ids.shape[-1] >= self.config['max'] or next_token[0, 0] == self.FINISH_TOKEN:
+            if input_ids.shape[-1] >= self.config['max'] or token_id == self.FINISH_TOKEN:
                 break
 
         decoded = self.tokenizer.decode(input_ids[0].tolist())
+        
+        # Get the token at the target position
+        faulty_token = None
+        if self.fault_config['target_token_idx'] < len(generated_tokens):
+            faulty_token = generated_tokens[self.fault_config['target_token_idx']]
         out = str(decoded.split('Response:')[1])
         logger.debug('Q: {} A: {}'.format(prompt, out))
-        return decoded, all_logits
+            
+        return out, faulty_token, faulty_token_logit
 
 
     def _faulty_decode(self, inputs: dict, idx: int):
@@ -337,31 +368,31 @@ class Llama:
 #     return args
 
  
-# def prepare_guanaco_prompts(dataset_name="mlabonne/guanaco-llama2-1k", num_samples=None):
-#     try:
-#         # Load the dataset
-#         dataset = load_dataset(dataset_name, split="train")
-#         print('ya')
-#         # Extract prompts from the dataset
-#         prompts = []
-#         for item in dataset:
-#             # Extract just the instruction part from the text
-#             text = item['text']
-#             if '[INST]' in text and '[/INST]' in text:
-#                 # Extract text between [INST] and [/INST]
-#                 instruction = text.split('[INST]')[1].split('[/INST]')[0].strip()
-#                 prompts.append(instruction)
+def prepare_guanaco_prompts(dataset_name="mlabonne/guanaco-llama2-1k", num_samples=None):
+    try:
+        # Load the dataset
+        dataset = load_dataset(dataset_name, split="train")
+        print('ya')
+        # Extract prompts from the dataset
+        prompts = []
+        for item in dataset:
+            # Extract just the instruction part from the text
+            text = item['text']
+            if '[INST]' in text and '[/INST]' in text:
+                # Extract text between [INST] and [/INST]
+                instruction = text.split('[INST]')[1].split('[/INST]')[0].strip()
+                prompts.append(instruction)
         
-#         # Sample if requested
-#         if num_samples and len(prompts) > num_samples:
+        # Sample if requested
+        if num_samples and len(prompts) > num_samples:
           
-#             return random.sample(prompts, num_samples)
+            return random.sample(prompts, num_samples)
             
-#         return prompts
+        return prompts
         
-#     except Exception as e:
-#         logger.error(f"Error loading dataset {dataset_name}: {e}")
-#         return None
+    except Exception as e:
+        logger.error(f"Error loading dataset {dataset_name}: {e}")
+        return None
 
 def extract_decoder_idx(path):
     import os
@@ -375,7 +406,7 @@ if __name__ == "__main__":
     # print(extract_decoder_idx('decoders/7B/decoder-merge-20.onnx'))
     # Directory containing per-layer configuration files.
     # Prepare a set of prompts from the Guanaco dataset.
-    # prompts = prepare_guanaco_prompts("mlabonne/guanaco-llama2-1k", num_samples=1000)
+    prompts = prepare_guanaco_prompts("mlabonne/guanaco-llama2-1k", num_samples=1000)
     # model = SentenceTransformer('all-MiniLM-L6-v2')
 
     print("Starting experiments...")
@@ -403,7 +434,6 @@ if __name__ == "__main__":
         for fault_model in ['INPUT', 'INPUT16', 'WEIGHT', 'WEIGHT16', 'RANDOM']:
             # For each bit position (0-7).
             for bit_position in range(8):
-                    
                 # Run several experiments for this combination.
                 if fault_model in ['INPUT', 'INPUT16']:
                     faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
@@ -416,44 +446,57 @@ if __name__ == "__main__":
                 if faulty_path is not None and faulty_path in persistent_llama.faulty_decoders:
                     del persistent_llama.faulty_decoders[faulty_path]
                 # Pick a random prompt.
-                # prompt_index = np.random.randint(0, len(prompts))
-                # prompt = prompts[prompt_index]
-                prompt = "Good Morning Llama"
+                prompt_index = np.random.randint(0, len(prompts))
+                prompt = prompts[prompt_index]
+              
          
            
                 for experiment in range(10):
                     # Choose the appropriate faulty model file.
                     print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}, Experiment: {experiment}")
-                
-                    # ----- Golden Run (No Fault Injection) -----
-                    print("Golden Run")
-                    golden_output, golden_logits = persistent_llama.sample_golden(prompt)
-                    # # ----- Faulty Run (One-Time Fault Injection) -----
-                    # # Tokenize the prompt to choose a valid target token index.
                     fault_config = {
-                        'enable_fault_injection': True,
                         'target_decoder_idx': extract_decoder_idx(faulty_path),
                         'target_token_idx': 0,  
                         'faulty_decoder_path': faulty_path
                     }
                     persistent_llama.fault_config = fault_config
-                    persistent_llama.enable_fault_injection = True
-                    print("Faulty Run")
-                    faulty_output, faulty_logits = persistent_llama.sample_faulty(prompt)
+                    # ----- Golden Run (No Fault Injection) -----
+                    print("Golden Run")
+                    golden_output, golden_token, golden_logits = persistent_llama.sample_golden(prompt)
+                    # # ----- Faulty Run (One-Time Fault Injection) -----
+                    # # Tokenize the prompt to choose a valid target token index.
                     
-                    diff_data = []  # to store (layer_index, max_diff, mean_diff)
-                    for i, (g_logit, f_logit) in enumerate(zip(golden_logits, faulty_logits)):
-                        diff = np.abs(g_logit - f_logit)
-                        max_diff = np.max(diff)
-                        mean_diff = np.mean(diff)
-                        diff_data.append((i, max_diff, mean_diff))
-                        print(f"Layer {i} - Max: {max_diff} Mean: {mean_diff}")
-
-                    # Write results to a CSV file
-                    with open('logit_differences.csv', 'w', newline='') as csvfile:
-                        writer = csv.writer(csvfile)
-                        writer.writerow(['Step', 'Max Difference', 'Mean Difference'])
-                        for row in diff_data:
-                            writer.writerow(row)
+                    print("Faulty Run")
+                    faulty_output, faulty_token, faulty_logits = persistent_llama.sample_faulty(prompt)
+                    
+                    golden_token_text = persistent_llama.tokenizer.decode([golden_token]) 
+                    faulty_token_text = persistent_llama.tokenizer.decode([faulty_token]) 
+                    
+                    csv_filename = 'fault_injection_results.csv'
+                    file_exists = os.path.isfile(csv_filename)
+                    with open(csv_filename, 'a', newline='') as csvfile:
+                        fieldnames = [
+                            'Timestamp', 'Layer_Config', 'Fault_Model', 'Bit_Position', 
+                            'Target_Decoder_Idx', 'Target_Token_Idx',
+                            'Golden_Token_ID', 'Golden_Token_Text', 'Faulty_Token_ID', 'Faulty_Token_Text',
+                            'Golden_Output', 'Faulty_Output'
+                        ]
+                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                        
+                        # Record results
+                        writer.writerow({
+                            'Timestamp': datetime.now().isoformat(),
+                            'Layer_Config': layer_file,
+                            'Fault_Model': fault_model,
+                            'Bit_Position': bit_position,
+                            'Target_Decoder_Idx': fault_config['target_decoder_idx'],
+                            'Target_Token_Idx': fault_config['target_token_idx'],
+                            'Golden_Token_ID': str(golden_token) if golden_token is not None else "N/A",
+                            'Golden_Token_Text': golden_token_text,
+                            'Faulty_Token_ID': str(faulty_token) if faulty_token is not None else "N/A",
+                            'Faulty_Token_Text': faulty_token_text,
+                            'Golden_Output': golden_output,
+                            'Faulty_Output': faulty_output
+                        })
                     
                     # Evaluation with cosine similarity, etc.

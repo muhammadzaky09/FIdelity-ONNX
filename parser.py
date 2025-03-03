@@ -32,6 +32,7 @@ def parse_transformer_pairs(model_path: str):
         'q_proj': '/self_attn/q_proj',
         'k_proj': '/self_attn/k_proj',
         'v_proj': '/self_attn/v_proj',
+        'o_proj': '/self_attn/o_proj',
         'gate_proj': '/mlp/gate_proj',
         'up_proj': '/mlp/up_proj',
         'down_proj': '/mlp/down_proj'
@@ -99,7 +100,7 @@ def parse_transformer_pairs(model_path: str):
 
 if __name__ == "__main__":
     # Directory containing your ONNX files.
-    onnx_dir = "decoders/7B16"
+    onnx_dir = "decoders"
     # Use glob to find all .onnx files in the specified directory.
     onnx_files = glob.glob(os.path.join(onnx_dir, "*.onnx"))
     print(f"Found {len(onnx_files)} ONNX files in directory '{onnx_dir}'")

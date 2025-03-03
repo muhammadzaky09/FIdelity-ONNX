@@ -1,6 +1,0 @@
-{
-    "round_node": "/self_attn/v_proj/Round",
-    "matmul_node": "/self_attn/v_proj/MatMul",
-    "weight_node": "onnx::MatMul_393",
-    "decoder_path": "decoders/decoder-merge-20.onnx"
-}
