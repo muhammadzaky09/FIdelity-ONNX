@@ -445,6 +445,10 @@ if __name__ == "__main__":
                 # If a faulty decoder is already loaded for this path, unload it.
                 if faulty_path is not None and faulty_path in persistent_llama.faulty_decoders:
                     del persistent_llama.faulty_decoders[faulty_path]
+                    if os.path.exists(faulty_path):
+                        os.remove(faulty_path)
+
+                    
                 # Pick a random prompt.
                 prompt_index = np.random.randint(0, len(prompts))
                 prompt = prompts[prompt_index]
