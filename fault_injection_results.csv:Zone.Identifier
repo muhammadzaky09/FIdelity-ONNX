@@ -1,0 +1,4 @@
+[ZoneTransfer]
+ZoneId=3
+ReferrerUrl=http://10.6.254.183:21404/lab/tree/onnx-transformer/fault_injection_results.csv
+HostUrl=http://10.6.254.183:21404/files/onnx-transformer/fault_injection_results.csv?_xsrf=2%7Cbb4191d0%7C03f20cfa50dfb171eb11f5ee1cb99851%7C1736861097

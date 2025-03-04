@@ -474,7 +474,7 @@ if __name__ == "__main__":
                     faulty_token_text = persistent_llama.tokenizer.decode([faulty_token])
                     print(f"Golden Token: {golden_token_text}, Faulty Token: {faulty_token_text}") 
                     
-                    csv_filename = 'fault_injection_results.csv'
+                    csv_filename = 'fault_injection_results2.csv'
                     file_exists = os.path.isfile(csv_filename)
                     with open(csv_filename, 'a', newline='') as csvfile:
                         csvfile.write(str(datetime.now().isoformat() + "," + str(layer_file) + "," + str(fault_model) + "," + str(bit_position) + "," + str(fault_config['target_decoder_idx']) + "," + str(fault_config['target_token_idx']) + "," + str(golden_token) + "," + str(golden_token_text) + "," + str(golden_logits) + "," + str(faulty_token) + "," + str(faulty_token_text) + "," + str(faulty_logits) + "," + str(golden_output) + "," + str(faulty_output) + "\n"))
