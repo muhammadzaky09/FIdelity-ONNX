@@ -446,6 +446,7 @@ if __name__ == "__main__":
                 if faulty_path is not None and faulty_path in persistent_llama.faulty_decoders:
                     del persistent_llama.faulty_decoders[faulty_path]
 
+
                     
                 # Pick a random prompt.
                 prompt_index = np.random.randint(0, len(prompts))
@@ -502,3 +503,5 @@ if __name__ == "__main__":
                         })
                     
                     # Evaluation with cosine similarity, etc.
+                if os.path.exists(faulty_path):
+                    os.remove(faulty_path)
