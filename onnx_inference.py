@@ -478,31 +478,9 @@ if __name__ == "__main__":
                     csv_filename = 'fault_injection_results.csv'
                     file_exists = os.path.isfile(csv_filename)
                     with open(csv_filename, 'a', newline='') as csvfile:
-                        fieldnames = [
-                            'Timestamp', 'Layer_Config', 'Fault_Model', 'Bit_Position', 
-                            'Target_Decoder_Idx', 'Target_Token_Idx',
-                            'Golden_Token_ID', 'Golden_Token_Text', 'Golden_Logits' ,'Faulty_Token_ID', 'Faulty_Token_Text','Faulty_Logits',
-                            'Golden_Output', 'Faulty_Output'
-                        ]
-                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                        
+                        csvfile.write(str(datetime.now().isoformat() + "," + str(layer_file) + "," + str(fault_model) + "," + str(bit_position) + "," + str(fault_config['target_decoder_idx']) + "," + str(fault_config['target_token_idx']) + "," + str(golden_token) + "," + str(golden_token_text) + "," + str(golden_logits) + "," + str(faulty_token) + "," + str(faulty_token_text) + "," + str(faulty_logits) + "," + str(golden_output) + "," + str(faulty_output) + "\n"))
                         # Record results
-                        writer.writerow({
-                            'Timestamp': datetime.now().isoformat(),
-                            'Layer_Config': layer_file,
-                            'Fault_Model': fault_model,
-                            'Bit_Position': bit_position,
-                            'Target_Decoder_Idx': fault_config['target_decoder_idx'],
-                            'Target_Token_Idx': fault_config['target_token_idx'],
-                            'Golden_Token_ID': str(golden_token) if golden_token is not None else "N/A",
-                            'Golden_Token_Text': golden_token_text,
-                            'Golden_Logits': golden_logits,
-                            'Faulty_Token_ID': str(faulty_token) if faulty_token is not None else "N/A",
-                            'Faulty_Token_Text': faulty_token_text,
-                            'Faulty_Logits': faulty_logits,
-                            'Golden_Output': golden_output,
-                            'Faulty_Output': faulty_output
-                        })
+                      
                     
                     # Evaluation with cosine similarity, etc.
                 if os.path.exists(faulty_path):
