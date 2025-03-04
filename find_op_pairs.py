@@ -291,18 +291,18 @@ def modify_onnx_graph_random(config, fault_model, bit_position=None):
     return output_path
 
             
-    
-    # config = {
-    #     "round_node": "/self_attn/k_proj/Round",
-    #     "matmul_node": "/self_attn/k_proj/MatMul",
-    #     "weight_node": "onnx::MatMul_390_const",
-    #     "decoder_path": "try/decoder-merge-20-patched.onnx"
-    # }
-    # fault_model = "INPUT16"  # or "WEIGHT16"
-    # bit_position = 3
+if __name__ == "__main__":
+    config = {
+        "round_node": "/self_attn/k_proj/Round",
+        "matmul_node": "/self_attn/k_proj/MatMul",
+        "weight_node": "onnx::MatMul_390_const",
+        "decoder_path": "decoders/decoder-merge-20.onnx"
+    }
+    fault_model = "WEIGHT"  # or "WEIGHT16"
+    bit_position = 3
     # modify_onnx_graph_input(config, fault_model, bit_position)
     # print('doing injection')
-    # modify_onnx_graph_weight(config, fault_model, bit_position)
+    modify_onnx_graph_weight(config, fault_model, bit_position)
     # fault_model = "RANDOM"
     # modify_onnx_graph_random(config, fault_model)
     

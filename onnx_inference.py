@@ -431,7 +431,7 @@ if __name__ == "__main__":
         print("Processing layer configuration:", layer_file)
         
         # Loop over different fault models.
-        for fault_model in ['INPUT', 'INPUT16', 'WEIGHT', 'WEIGHT16', 'RANDOM']:
+        for fault_model in ['WEIGHT', 'WEIGHT16', 'RANDOM']:
             # For each bit position (0-7).
             for bit_position in range(8):
                 # Run several experiments for this combination.
@@ -443,8 +443,7 @@ if __name__ == "__main__":
                     faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
                     
                 # If a faulty decoder is already loaded for this path, unload it.
-                if faulty_path is not None and faulty_path in persistent_llama.faulty_decoders:
-                    del persistent_llama.faulty_decoders[faulty_path]
+                
 
 
                     
@@ -483,5 +482,7 @@ if __name__ == "__main__":
                       
                     
                     # Evaluation with cosine similarity, etc.
-                if os.path.exists(faulty_path):
-                    os.remove(faulty_path)
+                if faulty_path is not None and faulty_path in persistent_llama.faulty_decoders:
+                    del persistent_llama.faulty_decoders[faulty_path]
+                    if os.path.exists(faulty_path):
+                        os.remove(faulty_path)
