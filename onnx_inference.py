@@ -481,7 +481,7 @@ if __name__ == "__main__":
                         fieldnames = [
                             'Timestamp', 'Layer_Config', 'Fault_Model', 'Bit_Position', 
                             'Target_Decoder_Idx', 'Target_Token_Idx',
-                            'Golden_Token_ID', 'Golden_Token_Text', 'Faulty_Token_ID', 'Faulty_Token_Text',
+                            'Golden_Token_ID', 'Golden_Token_Text', 'Golden_Logits' ,'Faulty_Token_ID', 'Faulty_Token_Text','Faulty_Logits',
                             'Golden_Output', 'Faulty_Output'
                         ]
                         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -496,8 +496,10 @@ if __name__ == "__main__":
                             'Target_Token_Idx': fault_config['target_token_idx'],
                             'Golden_Token_ID': str(golden_token) if golden_token is not None else "N/A",
                             'Golden_Token_Text': golden_token_text,
+                            'Golden_Logits': golden_logits,
                             'Faulty_Token_ID': str(faulty_token) if faulty_token is not None else "N/A",
                             'Faulty_Token_Text': faulty_token_text,
+                            'Faulty_Logits': faulty_logits,
                             'Golden_Output': golden_output,
                             'Faulty_Output': faulty_output
                         })
