@@ -368,7 +368,7 @@ class Llama:
                     'past_value_in': past_value
                 }
 
-            if self.config['fp16'] and hidden.dtype != torch.float16:
+            if self.config['fp16']:
                 inputs = {k: v.to(dtype=torch.float16) if v.dtype == torch.float32 else v 
                           for k, v in inputs.items()}
                 
@@ -491,7 +491,7 @@ class Llama:
                     'past_value_in': past_value
                 }
 
-            if self.config['fp16'] and hidden.dtype != torch.float16:
+            if self.config['fp16']:
                 inputs = {k: v.to(dtype=torch.float16) if v.dtype == torch.float32 else v 
                         for k, v in inputs.items()}
             
