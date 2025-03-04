@@ -84,7 +84,7 @@ def parse_transformer_pairs(model_path: str):
             info = {
                 "round_node": round_node_name,
                 "matmul_node": matmul_node_name,
-                "weight_node": weight_node_name,
+                "weight_node": weight_node_name+'_const',
                 "decoder_path": model_path
             }
             decoder_name = os.path.basename(model_path).replace('.onnx', '')

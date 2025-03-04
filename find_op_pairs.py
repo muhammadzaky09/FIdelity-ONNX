@@ -302,7 +302,7 @@ def modify_onnx_graph_random(config, fault_model, bit_position=None):
 #     bit_position = 3
     # modify_onnx_graph_input(config, fault_model, bit_position)
     # print('doing injection')
-    modify_onnx_graph_weight(config, fault_model, bit_position)
+    # modify_onnx_graph_weight(config, fault_model, bit_position)
     # fault_model = "RANDOM"
     # modify_onnx_graph_random(config, fault_model)
     
