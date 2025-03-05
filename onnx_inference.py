@@ -442,7 +442,7 @@ if __name__ == "__main__":
                 # Pick a random prompt.
                 prompt_index = np.random.randint(0, len(prompts))
                 # prompt = prompts[prompt_index]
-                prompt = "Fes-me un article de 300 paraules en to humorístic d'una notícia inventada sobre l'alcalde de Vacarisses que ha estat multat per portar 8 amics en un cotxe de quatre places."
+                prompt = "Can you present the derivation of the following logical statement? ((Q ∧ R) → P), (¬(R → S) → (¬W → Q)), (Q ∨ ¬S) ⊢ (R → (P ∨ W))"
               
                 for experiment in range(10):
                     # Choose the appropriate faulty model file.
