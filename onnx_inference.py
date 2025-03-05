@@ -433,7 +433,7 @@ if __name__ == "__main__":
         # Loop over different fault models.
         for fault_model in ['WEIGHT16', 'RANDOM']:
             # For each bit position (0-7).
-            for bit_position in range(2):
+            for bit_position in range(1,2):
                 # Run several experiments for this combination.
                 if fault_model in ['INPUT', 'INPUT16']:
                     faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
