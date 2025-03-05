@@ -253,6 +253,7 @@ class Llama:
         """
         Golden run: Runs full inference with no fault injection.
         """
+        
         format_prompt = PROMPT.format_map({'instruction': prompt})
         input_ids = self.tokenizer(format_prompt, return_tensors="pt").input_ids.to(self.device)
         input_ids = np.array(input_ids.cpu(), dtype=np.int64).reshape(
@@ -263,31 +264,26 @@ class Llama:
         self.pastvalues = [None] * self.DECODER_COUNT
         
         generated_tokens = []
-        golden_token_logit = None  # Will only be set if we reach target_token_idx
+        golden_token_logit = None  
         token_count = 0
         next_token = input_ids
         
         while True:
-            # Use the standard (golden) decode
+
             logits = self.decode(next_token)
             next_token_scores = logits[:, -1, :]
-            
-            # If this is our target token, save its logit before warping
             if token_count == self.fault_config['target_token_idx']:
-                # We'll capture the logit after we know which token was selected
                 golden_token_logit = next_token_scores.copy()
-            
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
-            next_token = npgreedy2D(probs).astype(input_ids.dtype)
+            # next_token = npgreedy2D(probs).astype(input_ids.dtype)
+            next_token = npmultinominal2D(probs).astype(input_ids.dtype)
             token_id = int(next_token[0, 0])
-            
-            
             generated_tokens.append(token_id)
             input_ids = np.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
             token_count += 1
 
-            if input_ids.shape[-1] >= self.config['max'] or token_id == self.FINISH_TOKEN:
+            if input_ids.shape[-1] >= self.config['max'] or next_token[0,0] == self.FINISH_TOKEN:
                 break
 
         decoded = self.tokenizer.decode(input_ids[0].tolist())
@@ -443,13 +439,10 @@ if __name__ == "__main__":
                     faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
                     
                 # If a faulty decoder is already loaded for this path, unload it.
-                
-
-
-                    
                 # Pick a random prompt.
                 prompt_index = np.random.randint(0, len(prompts))
-                prompt = prompts[prompt_index]
+                # prompt = prompts[prompt_index]
+                prompt = 'Can you present the derivation of the following logical statement? ((Q ∧ R) → P), (¬(R → S) → (¬W → Q)), (Q ∨ ¬S) ⊢ (R → (P ∨ W))'
               
                 for experiment in range(10):
                     # Choose the appropriate faulty model file.
