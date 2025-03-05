@@ -443,8 +443,8 @@ if __name__ == "__main__":
                 # If a faulty decoder is already loaded for this path, unload it.
                 # Pick a random prompt.
                 prompt_index = np.random.randint(0, len(prompts))
-                # prompt = prompts[prompt_index]
-                prompt = "Can you present the derivation of the following logical statement? ((Q ∧ R) → P), (¬(R → S) → (¬W → Q)), (Q ∨ ¬S) ⊢ (R → (P ∨ W))"
+                prompt = prompts[prompt_index]
+               
               
                 for experiment in range(10):
                     # Choose the appropriate faulty model file.
@@ -464,21 +464,22 @@ if __name__ == "__main__":
                     # # ----- Faulty Run (One-Time Fault Injection) -----
                     # # Tokenize the prompt to choose a valid target token index.
                     
-                    # print("Faulty Run")
-                    # faulty_output, faulty_token, faulty_logits = persistent_llama.sample_faulty(prompt)
+                    print("Faulty Run")
+                    faulty_output, faulty_token, faulty_logits = persistent_llama.sample_faulty(prompt)
                     
                     golden_token_text = persistent_llama.tokenizer.decode([golden_token]) 
-                    # faulty_token_text = persistent_llama.tokenizer.decode([faulty_token])
-                    # print(f"Golden Token: {golden_token_text}, Faulty Token: {faulty_token_text}") 
+                    faulty_token_text = persistent_llama.tokenizer.decode([faulty_token])
+                    print(f"Golden Token: {golden_token_text}, Faulty Token: {faulty_token_text}") 
                     
-                    csv_filename = 'fault_injection_results3.csv'
+                    csv_filename = 'fault_injection_results4.csv'
                     file_exists = os.path.isfile(csv_filename)
                     with open(csv_filename, 'a', newline='') as csvfile:
                         fieldnames = [
                             'Timestamp', 'Layer_Config', 'Fault_Model', 'Bit_Position', 
                             'Target_Decoder_Idx', 'Target_Token_Idx',
                             'Golden_Token_ID', 'Golden_Token_Text', 'Golden_Logits', 
-                            'Golden_Output'
+                            'Faulty_Token_ID','Faulty_Token_Text','Faulty_Logits'
+                            'Golden_Output', 'Faulty_Output'
                         ]
                         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                         
@@ -497,11 +498,11 @@ if __name__ == "__main__":
                             'Golden_Token_ID': str(golden_token),
                             'Golden_Token_Text': str(golden_token_text),
                             'Golden_Logits': str(golden_logits),  # Convert tensor to string
-                            # 'Faulty_Token_ID': str(faulty_token),
-                            # 'Faulty_Token_Text': str(faulty_token_text),
-                            # 'Faulty_Logits': str(faulty_logits),  # Convert tensor to string
+                            'Faulty_Token_ID': str(faulty_token),
+                            'Faulty_Token_Text': str(faulty_token_text),
+                            'Faulty_Logits': str(faulty_logits),  # Convert tensor to string
                             'Golden_Output': str(golden_output),
-                            # 'Faulty_Output': str(faulty_output)
+                            'Faulty_Output': str(faulty_output)
                         })
                         # Record results
                       
