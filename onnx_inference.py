@@ -445,12 +445,12 @@ if __name__ == "__main__":
                 prompt_index = np.random.randint(0, len(prompts))
                 prompt = prompts[prompt_index]
                
-              
+                random_seed = (bit_position * 1000) 
                 for experiment in range(10):
                     # Choose the appropriate faulty model file.
                     print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}, Experiment: {experiment}")
                     target_token_idx = np.random.randint(0, 10)
-                    random_seed = (bit_position * 1000) + experiment
+                    
                     fault_config = {
                         'target_decoder_idx': extract_decoder_idx(faulty_path),
                         'target_token_idx': target_token_idx,  
@@ -478,7 +478,7 @@ if __name__ == "__main__":
                             'Timestamp', 'Layer_Config', 'Fault_Model', 'Bit_Position', 
                             'Target_Decoder_Idx', 'Target_Token_Idx',
                             'Golden_Token_ID', 'Golden_Token_Text', 'Golden_Logits', 
-                            'Faulty_Token_ID','Faulty_Token_Text','Faulty_Logits'
+                            'Faulty_Token_ID','Faulty_Token_Text','Faulty_Logits',
                             'Golden_Output', 'Faulty_Output'
                         ]
                         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
