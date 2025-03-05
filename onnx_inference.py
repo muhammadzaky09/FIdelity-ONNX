@@ -431,9 +431,9 @@ if __name__ == "__main__":
         print("Processing layer configuration:", layer_file)
         
         # Loop over different fault models.
-        for fault_model in ['WEIGHT16', 'RANDOM']:
+        for fault_model in ['INPUT','INPUT16','WEIGHT16', 'RANDOM']:
             # For each bit position (0-7).
-            for bit_position in range(1,2):
+            for bit_position in range(10):
                 # Run several experiments for this combination.
                 if fault_model in ['INPUT', 'INPUT16']:
                     faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
@@ -474,10 +474,39 @@ if __name__ == "__main__":
                     faulty_token_text = persistent_llama.tokenizer.decode([faulty_token])
                     print(f"Golden Token: {golden_token_text}, Faulty Token: {faulty_token_text}") 
                     
-                    csv_filename = 'fault_injection_results2.csv'
+                    csv_filename = 'fault_injection_results3.csv'
                     file_exists = os.path.isfile(csv_filename)
                     with open(csv_filename, 'a', newline='') as csvfile:
-                        csvfile.write(str(datetime.now().isoformat() + "," + str(layer_file) + "," + str(fault_model) + "," + str(bit_position) + "," + str(fault_config['target_decoder_idx']) + "," + str(fault_config['target_token_idx']) + "," + str(golden_token) + "," + str(golden_token_text) + "," + str(golden_logits) + "," + str(faulty_token) + "," + str(faulty_token_text) + "," + str(faulty_logits) + "," + str(golden_output) + "," + str(faulty_output) + "\n"))
+                        fieldnames = [
+                            'Timestamp', 'Layer_Config', 'Fault_Model', 'Bit_Position', 
+                            'Target_Decoder_Idx', 'Target_Token_Idx',
+                            'Golden_Token_ID', 'Golden_Token_Text', 'Golden_Logits', 
+                            'Faulty_Token_ID', 'Faulty_Token_Text', 'Faulty_Logits',
+                            'Golden_Output', 'Faulty_Output'
+                        ]
+                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                        
+                        # Write header if file is new
+                        if not file_exists:
+                            writer.writeheader()
+                        
+                        # Write the row as a dictionary
+                        writer.writerow({
+                            'Timestamp': datetime.now().isoformat(),
+                            'Layer_Config': str(layer_file),
+                            'Fault_Model': str(fault_model),
+                            'Bit_Position': str(bit_position),
+                            'Target_Decoder_Idx': str(fault_config['target_decoder_idx']),
+                            'Target_Token_Idx': str(fault_config['target_token_idx']),
+                            'Golden_Token_ID': str(golden_token),
+                            'Golden_Token_Text': str(golden_token_text),
+                            'Golden_Logits': str(golden_logits),  # Convert tensor to string
+                            'Faulty_Token_ID': str(faulty_token),
+                            'Faulty_Token_Text': str(faulty_token_text),
+                            'Faulty_Logits': str(faulty_logits),  # Convert tensor to string
+                            'Golden_Output': str(golden_output),
+                            'Faulty_Output': str(faulty_output)
+                        })
                         # Record results
                       
                     
