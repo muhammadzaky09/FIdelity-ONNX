@@ -276,8 +276,8 @@ class Llama:
                 golden_token_logit = next_token_scores.copy()
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
-            next_token = npgreedy2D(probs).astype(input_ids.dtype)
-            # next_token = npmultinominal2D(probs).astype(input_ids.dtype)
+            # next_token = npgreedy2D(probs).astype(input_ids.dtype)
+            next_token = npmultinominal2D(probs).astype(input_ids.dtype)
             token_id = int(next_token[0, 0])
             generated_tokens.append(token_id)
             input_ids = np.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
@@ -409,7 +409,7 @@ if __name__ == "__main__":
 
     # Llama configuration remains the same.
     llama_config = {
-        'temperature': 0.001,
+        'temperature': 1,
         'topk': 40,
         'max': 1000,
         'poolsize': 39,
