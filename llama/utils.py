@@ -30,6 +30,18 @@ def npmultinominal2D(x):
 
     return ret
 
+def seeded_npmultinomial2D(x, seed=42):
+    assert len(x.shape) == 2
+
+    rng = np.random.RandomState(seed)
+    
+    ret = np.zeros((x.shape[0], 1), dtype=x.dtype)
+    
+    for row, pval in enumerate(x):
+        ret[row] = rng.multinomial(1, pval).argmax()
+    
+    return ret
+
 def npgreedy2D(x):
     return np.argmax(x, axis=1).reshape(x.shape[0], 1)
 

@@ -4,7 +4,7 @@ import json
 from loguru import logger
 from llama.decoder import Decoder
 from llama.memory_pool import MemoryPoolSimple
-from llama.utils import npsoftmax, npmultinominal2D, npgreedy2D
+from llama.utils import npsoftmax, npmultinominal2D, npgreedy2D, seeded_npmultinomial2D
 from llama.logits_process import warp_temperature, warp_topk
 import argparse
 from datasets import load_dataset
@@ -45,6 +45,7 @@ class Llama:
                                self.DECODER_COUNT)
         self.config = config
         self.device = 'cuda'
+        self.seed = None
 
         # cache
         self.pastkeys = [None for i in range(self.DECODER_COUNT)]
@@ -276,8 +277,8 @@ class Llama:
                 golden_token_logit = next_token_scores.copy()
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
-            next_token = npgreedy2D(probs).astype(input_ids.dtype)
             # next_token = npmultinominal2D(probs).astype(input_ids.dtype)
+            next_token = seeded_npmultinomial2D(probs, self.seed).astype(input_ids.dtype)
             token_id = int(next_token[0, 0])
             generated_tokens.append(token_id)
             input_ids = np.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
@@ -323,7 +324,8 @@ class Llama:
             next_token_scores = logits[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
-            next_token = npgreedy2D(probs).astype(input_ids.dtype)
+            # next_token = npgreedy2D(probs).astype(input_ids.dtype)
+            next_token = seeded_npmultinomial2D(probs, self.seed).astype(input_ids.dtype)
             token_id = int(next_token[0, 0])
             
            
@@ -448,12 +450,14 @@ if __name__ == "__main__":
                     # Choose the appropriate faulty model file.
                     print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}, Experiment: {experiment}")
                     target_token_idx = np.random.randint(0, 10)
+                    random_seed = (bit_position * 1000) + experiment
                     fault_config = {
                         'target_decoder_idx': extract_decoder_idx(faulty_path),
                         'target_token_idx': target_token_idx,  
                         'faulty_decoder_path': faulty_path
                     }
                     persistent_llama.fault_config = fault_config
+                    persistent_llama.seed = random_seed
                     # ----- Golden Run (No Fault Injection) -----
                     print("Golden Run")
                     golden_output, golden_token, golden_logits = persistent_llama.sample_golden(prompt)
