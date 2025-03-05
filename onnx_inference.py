@@ -423,7 +423,7 @@ if __name__ == "__main__":
 
     # Loop over each layer configuration.
     for layer_file in os.listdir("input_llm"):
-        
+        layer_file = "decoder-merge-23_q_proj.json"
         config_path = os.path.join("input_llm", layer_file)
         config = json.load(open(config_path))
         print("Processing layer configuration:", layer_file)
