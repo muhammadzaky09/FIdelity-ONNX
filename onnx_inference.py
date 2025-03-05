@@ -479,7 +479,7 @@ if __name__ == "__main__":
                             'Target_Decoder_Idx', 'Target_Token_Idx',
                             'Golden_Token_ID', 'Golden_Token_Text', 'Golden_Logits', 
                             'Faulty_Token_ID','Faulty_Token_Text','Faulty_Logits',
-                            'Golden_Output', 'Faulty_Output'
+                            'Golden_Output', 'Faulty_Output',
                         ]
                         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                         
@@ -497,10 +497,10 @@ if __name__ == "__main__":
                             'Target_Token_Idx': str(fault_config['target_token_idx']),
                             'Golden_Token_ID': str(golden_token),
                             'Golden_Token_Text': str(golden_token_text),
-                            'Golden_Logits': str(golden_logits),  # Convert tensor to string
+                            'Golden_Logits': str(golden_logits),  
                             'Faulty_Token_ID': str(faulty_token),
                             'Faulty_Token_Text': str(faulty_token_text),
-                            'Faulty_Logits': str(faulty_logits),  # Convert tensor to string
+                            'Faulty_Logits': str(faulty_logits), 
                             'Golden_Output': str(golden_output),
                             'Faulty_Output': str(faulty_output)
                         })
