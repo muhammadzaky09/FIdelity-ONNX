@@ -429,7 +429,7 @@ if __name__ == "__main__":
         print("Processing layer configuration:", layer_file)
         
         # Loop over different fault models.
-        for fault_model in ['INPUT','INPUT16','WEIGHT16', 'RANDOM']:
+        for fault_model in ['WEIGHT16', 'RANDOM']:
             # For each bit position (0-7).
             for bit_position in range(10):
                 # Run several experiments for this combination.
