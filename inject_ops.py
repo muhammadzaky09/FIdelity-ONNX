@@ -174,313 +174,229 @@ def create_quantized_fault_injection_weight(input_name, output_name, bit_positio
     ))
 
     return nodes
-
-def create_weight16_mask(matmul_output="y", masked_output="y_masked",
-                                  block_length=4):
+def create_weight16_mask(matmul_output="y", masked_output="y_masked", block_length=4):
+    """
+    Create a mask that keeps only 'block_length' consecutive rows in the sequence dimension.
+    Fixed to properly handle broadcasting with 3D tensors of shape [batch, sequence, hidden].
+    """
     nodes = []
     suffix = "_mask"
-
-    # 1. Get the shape of the MatMul output 'y'
+    
+    # 1. Get the shape of the input tensor
     nodes.append(helper.make_node(
         "Shape",
         inputs=[matmul_output],
-        outputs=["y_shape_mask"]
+        outputs=["y_shape" + suffix]
     ))
-
-    # --- Create constants for slicing the shape tensor ---
-    # For M_value (number of rows): slice indices [0:1] along axis 0.
+    
+    # 2. Get the sequence length (dimension 1)
     nodes.append(helper.make_node(
         "Constant",
         inputs=[],
-        outputs=["M_starts"],
+        outputs=["dim1_idx" + suffix],
         value=helper.make_tensor(
-            name="M_starts_tensor",
+            name="dim1_idx_tensor" + suffix,
+            data_type=TensorProto.INT64,
+            dims=[1],
+            vals=[1]  # Second dimension (index 1)
+        )
+    ))
+    
+    nodes.append(helper.make_node(
+        "Gather",
+        inputs=["y_shape" + suffix, "dim1_idx" + suffix],
+        outputs=["seq_len_tensor" + suffix],
+        axis=0
+    ))
+    
+    # 3. Squeeze to scalar
+    nodes.append(helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["squeeze_axes" + suffix],
+        value=helper.make_tensor(
+            name="squeeze_axes_tensor" + suffix,
             data_type=TensorProto.INT64,
             dims=[1],
             vals=[0]
         )
     ))
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["M_ends"],
-        value=helper.make_tensor(
-            name="M_ends_tensor",
-            data_type=TensorProto.INT64,
-            dims=[1],
-            vals=[1]
-        )
-    ))
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["M_axes"],
-        value=helper.make_tensor(
-            name="M_axes_tensor",
-            data_type=TensorProto.INT64,
-            dims=[1],
-            vals=[0]
-        )
-    ))
-
-    # For N_value (number of columns): slice indices [1:2] along axis 0.
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["N_starts"],
-        value=helper.make_tensor(
-            name="N_starts_tensor",
-            data_type=TensorProto.INT64,
-            dims=[1],
-            vals=[1]
-        )
-    ))
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["N_ends"],
-        value=helper.make_tensor(
-            name="N_ends_tensor",
-            data_type=TensorProto.INT64,
-            dims=[1],
-            vals=[2]
-        )
-    ))
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["N_axes"],
-        value=helper.make_tensor(
-            name="N_axes_tensor",
-            data_type=TensorProto.INT64,
-            dims=[1],
-            vals=[0]
-        )
-    ))
-
-    # 2. Slice out the first dimension (M) from y_shape_mask.
-    nodes.append(helper.make_node(
-        "Slice",
-        inputs=["y_shape_mask", "M_starts", "M_ends", "M_axes"],
-        outputs=["M_value"]
-    ))
-
-    # 2.5. Squeeze M_value from shape [1] to a scalar.
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["squeeze_axes"],
-        value=helper.make_tensor(
-            name="squeeze_axes_tensor",
-            data_type=TensorProto.INT64,
-            dims=[1],
-            vals=[0]
-        )
-    ))
+    
     nodes.append(helper.make_node(
         "Squeeze",
-        inputs=["M_value", "squeeze_axes"],
-        outputs=["M_scalar"]
+        inputs=["seq_len_tensor" + suffix, "squeeze_axes" + suffix],
+        outputs=["seq_len" + suffix]
     ))
-
-    # 3. Slice out the second dimension (N) from y_shape_mask.
-    nodes.append(helper.make_node(
-        "Slice",
-        inputs=["y_shape_mask", "N_starts", "N_ends", "N_axes"],
-        outputs=["N_value"]
-    ))
-
-    # 4. Create constants 0 and 1 for use with Range.
+    
+    # 4. Create scalar constants
     nodes.append(helper.make_node(
         "Constant",
         inputs=[],
-        outputs=["zero_const_mask"],
+        outputs=["zero_scalar" + suffix],
         value=helper.make_tensor(
-            name="zero_tensor_mask",
+            name="zero_scalar_tensor" + suffix,
             data_type=TensorProto.INT64,
-            dims=[],  # scalar
+            dims=[],  # Empty dims = scalar
             vals=[0]
         )
     ))
+    
     nodes.append(helper.make_node(
         "Constant",
         inputs=[],
-        outputs=["one_const_mask"],
+        outputs=["one_scalar" + suffix],
         value=helper.make_tensor(
-            name="one_tensor_mask",
+            name="one_scalar_tensor" + suffix,
             data_type=TensorProto.INT64,
-            dims=[],  # scalar
+            dims=[],  # Empty dims = scalar
             vals=[1]
         )
     ))
-
-    # 5. Generate a vector of row indices: Range(0, M_scalar, 1)
+    
+    # 5. Create a range of indices (0 to seq_len-1)
     nodes.append(helper.make_node(
         "Range",
-        inputs=["zero_const_mask", "M_scalar", "one_const_mask"],
-        outputs=["row_indices"]
+        inputs=["zero_scalar" + suffix, "seq_len" + suffix, "one_scalar" + suffix],
+        outputs=["seq_indices" + suffix]
     ))
-
-    # 6. --- Compute dynamic (random) start index ---
-    # Create a constant for block_length.
+    
+    # 6. Create block length constant
     nodes.append(helper.make_node(
         "Constant",
         inputs=[],
-        outputs=["block_length_const"],
+        outputs=["block_len" + suffix],
         value=helper.make_tensor(
-            name="block_length_tensor",
+            name="block_len_tensor" + suffix,
             data_type=TensorProto.INT64,
             dims=[],  # scalar
             vals=[block_length]
         )
     ))
-    # Compute M_minus_block = M_scalar - block_length_const.
+    
+    # 7. Calculate valid block length (min of block_length and seq_len)
+    nodes.append(helper.make_node(
+        "Min",
+        inputs=["block_len" + suffix, "seq_len" + suffix],
+        outputs=["valid_block" + suffix]
+    ))
+    
+    # 8. Calculate max start index
     nodes.append(helper.make_node(
         "Sub",
-        inputs=["M_scalar", "block_length_const"],
-        outputs=["M_minus_block"]
+        inputs=["seq_len" + suffix, "valid_block" + suffix],
+        outputs=["max_start" + suffix]
     ))
-    # Compute range_size = M_minus_block + 1.
-    nodes.append(helper.make_node(
-        "Add",
-        inputs=["M_minus_block", "one_const_mask"],
-        outputs=["range_size"]
-    ))
-    # Cast range_size to FLOAT.
+    
+    # 9. Generate random start index
     nodes.append(helper.make_node(
         "Cast",
-        inputs=["range_size"],
-        outputs=["range_size_float"],
+        inputs=["max_start" + suffix],
+        outputs=["max_start_float" + suffix],
         to=TensorProto.FLOAT
     ))
-    # Generate a random FLOAT value in [0, 1) with shape [1].
+    
     nodes.append(helper.make_node(
         "RandomUniform",
         inputs=[],
-        outputs=["rand_val_temp"],
+        outputs=["rand_tensor" + suffix],
         dtype=TensorProto.FLOAT,
         high=1.0,
         low=0.0,
         shape=[1]
     ))
-    # Squeeze the random value to obtain a scalar.
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["squeeze_axes_rand"],
-        value=helper.make_tensor(
-            name="squeeze_axes_rand_tensor",
-            data_type=TensorProto.INT64,
-            dims=[1],
-            vals=[0]
-        )
-    ))
+    
     nodes.append(helper.make_node(
         "Squeeze",
-        inputs=["rand_val_temp", "squeeze_axes_rand"],
-        outputs=["rand_val"]
+        inputs=["rand_tensor" + suffix, "squeeze_axes" + suffix],
+        outputs=["rand_scalar" + suffix]
     ))
-    # Scale the random value: rand_scaled = rand_val * range_size_float.
+    
     nodes.append(helper.make_node(
         "Mul",
-        inputs=["rand_val", "range_size_float"],
-        outputs=["rand_scaled"]
+        inputs=["rand_scalar" + suffix, "max_start_float" + suffix],
+        outputs=["rand_scaled" + suffix]
     ))
-    # Floor the scaled random value.
+    
     nodes.append(helper.make_node(
         "Floor",
-        inputs=["rand_scaled"],
-        outputs=["rand_index_float"]
+        inputs=["rand_scaled" + suffix],
+        outputs=["rand_floor" + suffix]
     ))
-    # Cast the floored value to INT64 to get dynamic start index.
+    
     nodes.append(helper.make_node(
         "Cast",
-        inputs=["rand_index_float"],
-        outputs=["start_index_dynamic"],
+        inputs=["rand_floor" + suffix],
+        outputs=["start_idx" + suffix],
         to=TensorProto.INT64
     ))
-    # Compute end_index_dynamic = start_index_dynamic + block_length_const.
+    
+    # 10. Calculate end index
     nodes.append(helper.make_node(
         "Add",
-        inputs=["start_index_dynamic", "block_length_const"],
-        outputs=["end_index_dynamic"]
+        inputs=["start_idx" + suffix, "valid_block" + suffix],
+        outputs=["end_idx" + suffix]
     ))
-
-    # 7. --- Build the mask using the dynamic start index ---
-    # Compare: row_indices >= start_index_dynamic.
+    
+    # 11. Create boolean mask
     nodes.append(helper.make_node(
         "GreaterOrEqual",
-        inputs=["row_indices", "start_index_dynamic"],
-        outputs=["ge_mask"]
+        inputs=["seq_indices" + suffix, "start_idx" + suffix],
+        outputs=["ge_mask" + suffix]
     ))
-    # Compare: row_indices < end_index_dynamic.
+    
     nodes.append(helper.make_node(
         "Less",
-        inputs=["row_indices", "end_index_dynamic"],
-        outputs=["lt_mask"]
+        inputs=["seq_indices" + suffix, "end_idx" + suffix],
+        outputs=["lt_mask" + suffix]
     ))
-    # Combine the two Boolean masks using And.
+    
     nodes.append(helper.make_node(
         "And",
-        inputs=["ge_mask", "lt_mask"],
-        outputs=["mask_bool"]
+        inputs=["ge_mask" + suffix, "lt_mask" + suffix],
+        outputs=["bool_mask_1d" + suffix]
     ))
-    # Cast the Boolean mask to FLOAT16.
-    nodes.append(helper.make_node(
-        "Cast",
-        inputs=["mask_bool"],
-        outputs=["mask_float"],
-        to=TensorProto.FLOAT16
-    ))
-    # Unsqueeze mask_float to shape [M, 1] (provide axes as input).
+    
+    # 12. Create shape for reshaping the mask to 3D
     nodes.append(helper.make_node(
         "Constant",
         inputs=[],
-        outputs=["unsqueeze_axes_mask"],
+        outputs=["reshape_shape" + suffix],
         value=helper.make_tensor(
-            name="unsqueeze_axes_mask_tensor",
+            name="reshape_shape_tensor" + suffix,
             data_type=TensorProto.INT64,
-            dims=[1],
-            vals=[1]
+            dims=[3],
+            vals=[1, -1, 1]  # [1, seq_len, 1] with second dim inferred
         )
     ))
+    
+    # 13. Reshape the boolean mask to 3D for proper broadcasting
     nodes.append(helper.make_node(
-        "Unsqueeze",
-        inputs=["mask_float", "unsqueeze_axes_mask"],
-        outputs=["mask_unsqueezed"]
+        "Reshape",
+        inputs=["bool_mask_1d" + suffix, "reshape_shape" + suffix],
+        outputs=["bool_mask_3d" + suffix]
     ))
-    # Create a constant '1' for tiling as a 1D tensor (shape [1]).
+    
+    # 14. Create zeros tensor for masked values
     nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["one_for_tile"],
+        "ConstantOfShape",
+        inputs=["y_shape" + suffix],
+        outputs=["zeros" + suffix],
         value=helper.make_tensor(
-            name="one_for_tile_tensor",
-            data_type=TensorProto.INT64,
+            name="zeros_value" + suffix,
+            data_type=TensorProto.FLOAT16,
             dims=[1],
-            vals=[1]
+            vals=[0.0]
         )
     ))
-    # Concatenate [1] with N_value to form tile multiples: [1, N].
+    
+    # 15. Use Where instead of Mul for proper broadcasting
+    # Where(condition, x, y) returns x where condition is true, y otherwise
     nodes.append(helper.make_node(
-        "Concat",
-        inputs=["one_for_tile", "N_value"],
-        outputs=["tile_multiples"],
-        axis=0
-    ))
-    # Tile the mask_unsqueezed to shape [M, N].
-    nodes.append(helper.make_node(
-        "Tile",
-        inputs=["mask_unsqueezed", "tile_multiples"],
-        outputs=["mask_full"]
-    ))
-    # Multiply the MatMul output 'y' with the mask.
-    nodes.append(helper.make_node(
-        "Mul",
-        inputs=[matmul_output, "mask_full"],
+        "Where",
+        inputs=["bool_mask_3d" + suffix, matmul_output, "zeros" + suffix],
         outputs=[masked_output]
     ))
-
+    
     return nodes
 
 

@@ -133,6 +133,7 @@ def build_input_matmul_model_with_mask(input_shape=(1, 40, 25), weight_shape=(25
     
     model = helper.make_model(graph, producer_name="FaultInjectionInputMaskTest")
     onnx.checker.check_model(model)
+    model.opset_import[0].version = 18
     return model
 
 ###############################################################################
