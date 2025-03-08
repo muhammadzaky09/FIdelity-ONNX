@@ -423,15 +423,14 @@ if __name__ == "__main__":
 
     # Loop over each layer configuration.
     for layer_file in os.listdir("input_llm"):
-        layer_file = "decoder-merge-23_q_proj.json"
         config_path = os.path.join("input_llm", layer_file)
         config = json.load(open(config_path))
         print("Processing layer configuration:", layer_file)
         
         # Loop over different fault models.
-        for fault_model in ['WEIGHT16', 'RANDOM']:
+        for fault_model in ['INPUT','INPUT16','WEIGHT','WEIGHT16', 'RANDOM']:
             # For each bit position (0-7).
-            for bit_position in range(10):
+            for bit_position in range(8):
                 # Run several experiments for this combination.
                 if fault_model in ['INPUT', 'INPUT16']:
                     faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
@@ -446,10 +445,13 @@ if __name__ == "__main__":
                 prompt = prompts[prompt_index]
                
                 random_seed = (bit_position * 1000) 
-                for experiment in range(10):
+                for experiment in range(2):
                     # Choose the appropriate faulty model file.
                     print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}, Experiment: {experiment}")
-                    target_token_idx = np.random.randint(0, 10)
+                    if experiment == 0:
+                        target_token_idx = 0
+                    else: 
+                        target_token_idx = 4
                     
                     fault_config = {
                         'target_decoder_idx': extract_decoder_idx(faulty_path),
@@ -477,8 +479,8 @@ if __name__ == "__main__":
                         fieldnames = [
                             'Timestamp', 'Layer_Config', 'Fault_Model', 'Bit_Position', 
                             'Target_Decoder_Idx', 'Target_Token_Idx',
-                            'Golden_Token_ID', 'Golden_Token_Text', 'Golden_Logits', 
-                            'Faulty_Token_ID','Faulty_Token_Text','Faulty_Logits',
+                            'Golden_Token_ID', 'Golden_Token_Text',  
+                            'Faulty_Token_ID','Faulty_Token_Text',
                             'Golden_Output', 'Faulty_Output',
                         ]
                         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -497,10 +499,8 @@ if __name__ == "__main__":
                             'Target_Token_Idx': str(fault_config['target_token_idx']),
                             'Golden_Token_ID': str(golden_token),
                             'Golden_Token_Text': str(golden_token_text),
-                            'Golden_Logits': str(golden_logits),  
                             'Faulty_Token_ID': str(faulty_token),
                             'Faulty_Token_Text': str(faulty_token_text),
-                            'Faulty_Logits': str(faulty_logits), 
                             'Golden_Output': str(golden_output),
                             'Faulty_Output': str(faulty_output)
                         })
