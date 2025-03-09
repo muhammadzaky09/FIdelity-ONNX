@@ -422,8 +422,8 @@ if __name__ == "__main__":
     persistent_llama = Llama(onnxdir='decoders/7B16', config=llama_config)
 
     # Loop over each layer configuration.
-    for layer_file in os.listdir("input_llm"):
-        config_path = os.path.join("input_llm", layer_file)
+    for layer_file in os.listdir("injection_llm"):
+        config_path = os.path.join("injection_llm", layer_file)
         config = json.load(open(config_path))
         print("Processing layer configuration:", layer_file)
         

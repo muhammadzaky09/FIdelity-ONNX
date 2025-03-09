@@ -253,7 +253,7 @@ def modify_onnx_graph_random(config, fault_model, bit_position=None):
     else:
         injection_nodes = create_random_fault_injection(
             output_name=matmul_output,
-            random_value=delta_init()
+            random_value=delta_init(is_float32=False)
         )
     
 
