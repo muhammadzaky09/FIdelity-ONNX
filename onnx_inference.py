@@ -264,39 +264,38 @@ class Llama:
         self.pastkeys = [None] * self.DECODER_COUNT
         self.pastvalues = [None] * self.DECODER_COUNT
         
-        generated_tokens = []
-        golden_token_logit = None  
+        generated_tokens = []  
         token_count = 0
         next_token = input_ids
         
         while True:
-
             logits = self.decode(next_token)
             next_token_scores = logits[:, -1, :]
-            if token_count == self.fault_config['target_token_idx']:
-                golden_token_logit = next_token_scores.copy()
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
-            # next_token = npmultinominal2D(probs).astype(input_ids.dtype)
             next_token = seeded_npmultinomial2D(probs, self.seed).astype(input_ids.dtype)
             token_id = int(next_token[0, 0])
             generated_tokens.append(token_id)
             input_ids = np.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
             token_count += 1
-
+        
             if input_ids.shape[-1] >= self.config['max'] or next_token[0,0] == self.FINISH_TOKEN:
                 break
-
-        decoded = self.tokenizer.decode(input_ids[0].tolist())
         
-        # Get the token at target position
-        golden_token = None
-        if self.fault_config['target_token_idx'] < len(generated_tokens):
-            golden_token = generated_tokens[self.fault_config['target_token_idx']]
+        decoded = self.tokenizer.decode(input_ids[0].tolist())
         out = str(decoded.split('Response:')[1])
         logger.debug('Q: {} A: {}'.format(prompt, out))
+        
+        # Add token length to return values
+        token_length = len(generated_tokens)
+        
+        # Get token at the first position for experiment 0
+        first_token = generated_tokens[0] if generated_tokens else None
+        # Get token at the middle position for experiment 1
+        middle_idx = token_length // 2
+        middle_token = generated_tokens[middle_idx] if 0 <= middle_idx < token_length else None
             
-        return out, golden_token, golden_token_logit
+        return out, first_token, middle_token, middle_idx
     
     def sample_faulty(self, prompt: str = 'bonjour'):
         format_prompt = PROMPT.format_map({'instruction': prompt})
@@ -310,14 +309,12 @@ class Llama:
 
         token_count = 0
         generated_tokens = []
-        faulty_token_logit = None  # Will only be set at the target token
         next_token = input_ids
         
         while True:
             # At the target token generation, use decode_faulty
             if token_count == self.fault_config['target_token_idx']:
                 logits = self.decode_faulty(next_token)
-                faulty_token_logit = logits[:, -1, :].copy()
             else:
                 logits = self.decode(next_token)
                 
@@ -327,9 +324,6 @@ class Llama:
             # next_token = npgreedy2D(probs).astype(input_ids.dtype)
             next_token = seeded_npmultinomial2D(probs, self.seed).astype(input_ids.dtype)
             token_id = int(next_token[0, 0])
-            
-           
-            
             generated_tokens.append(token_id)
             input_ids = np.concatenate([input_ids, next_token.reshape((1, 1))], axis=1)
             token_count += 1
@@ -346,7 +340,7 @@ class Llama:
         out = str(decoded.split('Response:')[1])
         logger.debug('Q: {} A: {}'.format(prompt, out))
             
-        return out, faulty_token, faulty_token_logit
+        return out, faulty_token
 
 
     def _faulty_decode(self, inputs: dict, idx: int):
@@ -424,12 +418,17 @@ if __name__ == "__main__":
     # Loop over each layer configuration.
     for layer_file in os.listdir("injection_llm"):
         config_path = os.path.join("injection_llm", layer_file)
+        # Skip directories
+        if os.path.isdir(config_path):
+            continue
         config = json.load(open(config_path))
         print("Processing layer configuration:", layer_file)
         
         # Loop over different fault models.
-        for fault_model in ['INPUT','INPUT16','WEIGHT','WEIGHT16', 'RANDOM']:
+        for fault_model in ['INPUT','WEIGHT','INPUT16','WEIGHT16']:
             # For each bit position (0-7).
+            prompt_index = np.random.randint(0, len(prompts))
+            prompt = prompts[prompt_index]
             for bit_position in range(8):
                 # Run several experiments for this combination.
                 if fault_model in ['INPUT', 'INPUT16']:
@@ -439,41 +438,40 @@ if __name__ == "__main__":
                 else:
                     faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
                     
-                # If a faulty decoder is already loaded for this path, unload it.
-                # Pick a random prompt.
-                prompt_index = np.random.randint(0, len(prompts))
-                prompt = prompts[prompt_index]
+                
+                
                
-                random_seed = (bit_position * 1000) 
+                random_seed = (bit_position * 1000 + 1) 
                 for experiment in range(2):
                     # Choose the appropriate faulty model file.
                     print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}, Experiment: {experiment}")
+                    persistent_llama.seed = random_seed
+                    # ----- Golden Run (No Fault Injection) -----
+                    print("Golden Run")
+                    golden_output, first_token, middle_token, middle_idx = persistent_llama.sample_golden(prompt)
+                    # # ----- Faulty Run (One-Time Fault Injection) -----
+                    # # Tokenize the prompt to choose a valid target token index.
                     if experiment == 0:
                         target_token_idx = 0
-                    else: 
-                        target_token_idx = 4
-                    
+                        golden_token = first_token
+                    else:
+                        target_token_idx = middle_idx
+                        golden_token = middle_token
                     fault_config = {
                         'target_decoder_idx': extract_decoder_idx(faulty_path),
                         'target_token_idx': target_token_idx,  
                         'faulty_decoder_path': faulty_path
                     }
                     persistent_llama.fault_config = fault_config
-                    persistent_llama.seed = random_seed
-                    # ----- Golden Run (No Fault Injection) -----
-                    print("Golden Run")
-                    golden_output, golden_token, golden_logits = persistent_llama.sample_golden(prompt)
-                    # # ----- Faulty Run (One-Time Fault Injection) -----
-                    # # Tokenize the prompt to choose a valid target token index.
                     
                     print("Faulty Run")
-                    faulty_output, faulty_token, faulty_logits = persistent_llama.sample_faulty(prompt)
+                    faulty_output, faulty_token = persistent_llama.sample_faulty(prompt)
                     
                     golden_token_text = persistent_llama.tokenizer.decode([golden_token]) 
                     faulty_token_text = persistent_llama.tokenizer.decode([faulty_token])
                     print(f"Golden Token: {golden_token_text}, Faulty Token: {faulty_token_text}") 
                     
-                    csv_filename = 'fault_injection_results4.csv'
+                    csv_filename = 'fault_injection_results7.csv'
                     file_exists = os.path.isfile(csv_filename)
                     with open(csv_filename, 'a', newline='') as csvfile:
                         fieldnames = [

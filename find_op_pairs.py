@@ -290,6 +290,37 @@ def modify_onnx_graph_random(config, fault_model, bit_position=None):
     print(f"Modified random fault injection model saved to {output_path}")
     return output_path
 
+def expose_matmul_output(decoder_path, matmul_pattern, output_path=None):
+    if output_path is None:
+        output_path = decoder_path.replace('.onnx', '_with_matmul_output.onnx')
+    
+    model = onnx.load(decoder_path)
+    matmul_node = None
+    for node in model.graph.node:
+        if node.op_type == 'MatMul' and matmul_pattern in node.name:
+            matmul_node = node
+            break
+    
+    if matmul_node is None:
+        raise ValueError(f"No MatMul node found matching pattern '{matmul_pattern}'")
+    
+    matmul_output_name = matmul_node.output[0]
+    
+    is_already_output = any(output.name == matmul_output_name for output in model.graph.output)
+    
+    if not is_already_output:
+        new_output = helper.make_value_info(
+            matmul_output_name,
+            onnx.TensorProto.FLOAT16,  
+            None  
+        )
+        model.graph.output.append(new_output)
+    
+
+    onnx.save(model, output_path)
+    
+    return output_path, matmul_output_name
+
             
 # if __name__ == "__main__":
 #     config = {

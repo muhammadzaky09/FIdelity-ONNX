@@ -1,5 +1,7 @@
 import numpy as np
 from threading import Lock
+import onnx
+from onnx import helper
 
 def singleton(cls):
     _instance = {}
@@ -44,6 +46,7 @@ def seeded_npmultinomial2D(x, seed=42):
 
 def npgreedy2D(x):
     return np.argmax(x, axis=1).reshape(x.shape[0], 1)
+
 
 if __name__ == '__main__':
     data = np.ones((12, 8))
