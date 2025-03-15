@@ -6,7 +6,588 @@ import struct
 import os
 import math
 from tqdm import tqdm
-from inject_ops import create_fp16_bit_flip  # assuming this is your implementation
+
+def create_fp16_bit_flip(input_name, output_name, bit_position):
+
+    nodes = []
+    suffix = "_bf"
+    
+    # ------------------------------------------------
+    # 1. BASIC CONSTANTS AND INPUT PREPROCESSING
+    # ------------------------------------------------
+    
+    # Cast input to FP16 for precise handling
+    nodes.append(helper.make_node(
+        "Cast",
+        inputs=[input_name],
+        outputs=["input_fp16" + suffix],
+        to=TensorProto.FLOAT16
+    ))
+    
+    # Cast back to FP32 for calculations
+    nodes.append(helper.make_node(
+        "Cast",
+        inputs=["input_fp16" + suffix],
+        outputs=["input_fp32" + suffix],
+        to=TensorProto.FLOAT
+    ))
+    
+    # Basic constants needed for all operations
+    nodes.append(helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["zero" + suffix],
+        value=helper.make_tensor(
+            name="zero_tensor" + suffix,
+            data_type=TensorProto.FLOAT,
+            dims=[],
+            vals=[0.0]
+        )
+    ))
+    
+    # Check if input is zero (special handling required)
+    nodes.append(helper.make_node(
+        "Equal",
+        inputs=["input_fp32" + suffix, "zero" + suffix],
+        outputs=["is_zero" + suffix]
+    ))
+    
+    # ------------------------------------------------
+    # 2. HANDLE ZERO INPUT (SPECIAL CASE)
+    # ------------------------------------------------
+    
+    # For zero input, we need to return exact values for each bit position
+    # Precomputed FP16 values for each bit position flipped in zero
+    if bit_position == 15:  # Sign bit
+        zero_result = -0.0
+    elif bit_position >= 10:  # Exponent bits
+        # 2^(bit_position-10) is the value when flipping an exponent bit
+        # For bit 10: 2^0 = 1, bit 11: 2^1 = 2, etc.
+        power = bit_position - 10
+        zero_result = float(2.0 ** power)
+    else:  # Mantissa bits
+        # 2^(bit_position-24) is the value for denormal numbers
+        power = bit_position - 24
+        zero_result = float(2.0 ** power)
+    
+    # Create the constant with the correct value for zero input
+    nodes.append(helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["zero_result" + suffix],
+        value=helper.make_tensor(
+            name="zero_result_tensor" + suffix,
+            data_type=TensorProto.FLOAT16,
+            dims=[],
+            vals=[zero_result]
+        )
+    ))
+    
+    # Cast to FP32 for consistency
+    nodes.append(helper.make_node(
+        "Cast",
+        inputs=["zero_result" + suffix],
+        outputs=["zero_result_fp32" + suffix],
+        to=TensorProto.FLOAT
+    ))
+    
+    # ------------------------------------------------
+    # 3. HANDLE NON-ZERO INPUT BASED ON BIT TYPE
+    # ------------------------------------------------
+    
+    if bit_position == 15:  # SIGN BIT
+        # Simply negate the input
+        nodes.append(helper.make_node(
+            "Neg",
+            inputs=["input_fp32" + suffix],
+            outputs=["bit_result_raw" + suffix]
+        ))
+    
+    elif bit_position >= 10:  # EXPONENT BITS
+        # Get absolute value for exponent manipulation
+        nodes.append(helper.make_node(
+            "Abs",
+            inputs=["input_fp32" + suffix],
+            outputs=["abs_value" + suffix]
+        ))
+        
+        # Add small epsilon to avoid log(0)
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["epsilon" + suffix],
+            value=helper.make_tensor(
+                name="epsilon_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[1e-30]
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Add",
+            inputs=["abs_value" + suffix, "epsilon" + suffix],
+            outputs=["safe_abs" + suffix]
+        ))
+        
+        # Calculate log2 for exponent extraction
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["ln2" + suffix],
+            value=helper.make_tensor(
+                name="ln2_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[0.693147180559945]  # ln(2)
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Log",
+            inputs=["safe_abs" + suffix],
+            outputs=["log_value" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Div",
+            inputs=["log_value" + suffix, "ln2" + suffix],
+            outputs=["log2_value" + suffix]
+        ))
+        
+        # Get exponent and calculate scaling factor
+        nodes.append(helper.make_node(
+            "Floor",
+            inputs=["log2_value" + suffix],
+            outputs=["exponent" + suffix]
+        ))
+        
+        # Determine if target bit is set in exponent
+        # Exponent in FP16 is biased by 15
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["exponent_bias" + suffix],
+            value=helper.make_tensor(
+                name="exponent_bias_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[15.0]
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Add",
+            inputs=["exponent" + suffix, "exponent_bias" + suffix],
+            outputs=["biased_exponent" + suffix]
+        ))
+        
+        # Calculate bit position in biased exponent
+        bit_idx = bit_position - 10  # 0-based index in exponent field
+        bit_value = 1 << bit_idx     # Bit mask for this position
+        
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["bit_mask" + suffix],
+            value=helper.make_tensor(
+                name="bit_mask_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[float(bit_value)]
+            )
+        ))
+        
+        # Check if bit is set (using integer division and modulo)
+        nodes.append(helper.make_node(
+            "Div",
+            inputs=["biased_exponent" + suffix, "bit_mask" + suffix],
+            outputs=["bit_div" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Floor",
+            inputs=["bit_div" + suffix],
+            outputs=["bit_div_floor" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["two" + suffix],
+            value=helper.make_tensor(
+                name="two_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[2.0]
+            )
+        ))
+        
+        # Use division and subtraction instead of Mod for bit check
+        nodes.append(helper.make_node(
+            "Div",
+            inputs=["bit_div_floor" + suffix, "two" + suffix],
+            outputs=["half_div" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Floor",
+            inputs=["half_div" + suffix],
+            outputs=["half_div_floor" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Mul",
+            inputs=["half_div_floor" + suffix, "two" + suffix],
+            outputs=["twice_half_floor" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Sub",
+            inputs=["bit_div_floor" + suffix, "twice_half_floor" + suffix],
+            outputs=["bit_value" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["one" + suffix],
+            value=helper.make_tensor(
+                name="one_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[1.0]
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Equal",
+            inputs=["bit_value" + suffix, "one" + suffix],
+            outputs=["is_bit_set" + suffix]
+        ))
+        
+        # Calculate scaling factor for this bit
+        scaling_factor = 2.0 ** (2.0 ** bit_idx)
+        
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["scale_up" + suffix],
+            value=helper.make_tensor(
+                name="scale_up_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[scaling_factor]
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["scale_down" + suffix],
+            value=helper.make_tensor(
+                name="scale_down_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[1.0/scaling_factor]
+            )
+        ))
+        
+        # If bit is set, divide by scaling factor; otherwise multiply
+        nodes.append(helper.make_node(
+            "Where",
+            inputs=["is_bit_set" + suffix, "scale_down" + suffix, "scale_up" + suffix],
+            outputs=["scaling" + suffix]
+        ))
+        
+        # Apply scaling
+        nodes.append(helper.make_node(
+            "Mul",
+            inputs=["input_fp32" + suffix, "scaling" + suffix],
+            outputs=["bit_result_raw" + suffix]
+        ))
+    
+    else:  # MANTISSA BITS (0-9)
+        # Get absolute value
+        nodes.append(helper.make_node(
+            "Abs",
+            inputs=["input_fp32" + suffix],
+            outputs=["abs_value" + suffix]
+        ))
+        
+        # Check if input is negative
+        nodes.append(helper.make_node(
+            "Less",
+            inputs=["input_fp32" + suffix, "zero" + suffix],
+            outputs=["is_negative" + suffix]
+        ))
+        
+        # Add small epsilon to avoid log(0)
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["epsilon" + suffix],
+            value=helper.make_tensor(
+                name="epsilon_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[1e-30]
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Add",
+            inputs=["abs_value" + suffix, "epsilon" + suffix],
+            outputs=["safe_abs" + suffix]
+        ))
+        
+        # Calculate log2 and exponent
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["ln2" + suffix],
+            value=helper.make_tensor(
+                name="ln2_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[0.693147180559945]  # ln(2)
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Log",
+            inputs=["safe_abs" + suffix],
+            outputs=["log_value" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Div",
+            inputs=["log_value" + suffix, "ln2" + suffix],
+            outputs=["log2_value" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Floor",
+            inputs=["log2_value" + suffix],
+            outputs=["exponent" + suffix]
+        ))
+        
+        # Calculate 2^exponent
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["two" + suffix],
+            value=helper.make_tensor(
+                name="two_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[2.0]
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Pow",
+            inputs=["two" + suffix, "exponent" + suffix],
+            outputs=["pow2_exp" + suffix]
+        ))
+        
+        # Calculate mantissa weight for this bit
+        # Weight = 2^(bit_position-10) * 2^exponent
+        mantissa_bit_weight = 2.0 ** (bit_position - 10)
+        
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["mantissa_weight" + suffix],
+            value=helper.make_tensor(
+                name="mantissa_weight_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[mantissa_bit_weight]
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Mul",
+            inputs=["mantissa_weight" + suffix, "pow2_exp" + suffix],
+            outputs=["scaled_weight" + suffix]
+        ))
+        
+        # Extract normalized mantissa (0.0-1.0)
+        nodes.append(helper.make_node(
+            "Div",
+            inputs=["abs_value" + suffix, "pow2_exp" + suffix],
+            outputs=["normalized_mantissa" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["one" + suffix],
+            value=helper.make_tensor(
+                name="one_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[1.0]
+            )
+        ))
+        
+        # Remove implicit 1 to get fractional part
+        nodes.append(helper.make_node(
+            "Sub",
+            inputs=["normalized_mantissa" + suffix, "one" + suffix],
+            outputs=["mantissa_frac" + suffix]
+        ))
+        
+        # Scale to [0-1024) range
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["scale_1024" + suffix],
+            value=helper.make_tensor(
+                name="scale_1024_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[1024.0]
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Mul",
+            inputs=["mantissa_frac" + suffix, "scale_1024" + suffix],
+            outputs=["scaled_mantissa" + suffix]
+        ))
+        
+        # Use bit_position directly since mantissa bits are 0-9
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["bit_pos_value" + suffix],
+            value=helper.make_tensor(
+                name="bit_pos_value_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[float(2 ** bit_position)]
+            )
+        ))
+        
+        # Check if the bit is set using division
+        nodes.append(helper.make_node(
+            "Div",
+            inputs=["scaled_mantissa" + suffix, "bit_pos_value" + suffix],
+            outputs=["bit_div" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Floor",
+            inputs=["bit_div" + suffix],
+            outputs=["bit_div_floor" + suffix]
+        ))
+        
+        # Use division and subtraction instead of Mod
+        nodes.append(helper.make_node(
+            "Div",
+            inputs=["bit_div_floor" + suffix, "two" + suffix],
+            outputs=["half_div" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Floor",
+            inputs=["half_div" + suffix],
+            outputs=["half_div_floor" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Mul",
+            inputs=["half_div_floor" + suffix, "two" + suffix],
+            outputs=["twice_half_floor" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Sub",
+            inputs=["bit_div_floor" + suffix, "twice_half_floor" + suffix],
+            outputs=["bit_value" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Equal",
+            inputs=["bit_value" + suffix, "one" + suffix],
+            outputs=["is_bit_set" + suffix]
+        ))
+        
+        # Apply sign to the weight
+        nodes.append(helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["neg_one" + suffix],
+            value=helper.make_tensor(
+                name="neg_one_tensor" + suffix,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[-1.0]
+            )
+        ))
+        
+        nodes.append(helper.make_node(
+            "Where",
+            inputs=["is_negative" + suffix, "neg_one" + suffix, "one" + suffix],
+            outputs=["sign_factor" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Mul",
+            inputs=["scaled_weight" + suffix, "sign_factor" + suffix],
+            outputs=["signed_weight" + suffix]
+        ))
+        
+        # If bit is set, subtract; if not set, add
+        nodes.append(helper.make_node(
+            "Neg",
+            inputs=["signed_weight" + suffix],
+            outputs=["neg_signed_weight" + suffix]
+        ))
+        
+        nodes.append(helper.make_node(
+            "Where",
+            inputs=["is_bit_set" + suffix, "neg_signed_weight" + suffix, "signed_weight" + suffix],
+            outputs=["delta" + suffix]
+        ))
+        
+        # Apply delta to original value
+        nodes.append(helper.make_node(
+            "Add",
+            inputs=["input_fp32" + suffix, "delta" + suffix],
+            outputs=["bit_result_raw" + suffix]
+        ))
+    
+    # ------------------------------------------------
+    # 4. REQUANTIZE RESULT AND COMBINE
+    # ------------------------------------------------
+    
+    # Re-quantize to FP16 precision
+    nodes.append(helper.make_node(
+        "Cast",
+        inputs=["bit_result_raw" + suffix],
+        outputs=["bit_result_fp16" + suffix],
+        to=TensorProto.FLOAT16
+    ))
+    
+    # Cast back to FP32 for final output
+    nodes.append(helper.make_node(
+        "Cast",
+        inputs=["bit_result_fp16" + suffix],
+        outputs=["bit_result" + suffix],
+        to=TensorProto.FLOAT
+    ))
+    
+    # Choose between zero case and non-zero case
+    nodes.append(helper.make_node(
+        "Where",
+        inputs=["is_zero" + suffix, "zero_result_fp32" + suffix, "bit_result" + suffix],
+        outputs=[output_name]
+    ))
+    
+    return nodes
 
 def float16_to_binary(value):
     """Convert a float16 value to its binary representation for display."""
@@ -183,7 +764,7 @@ def generate_all_round_fp16_values():
     return verified_values
 
 def generate_all_exact_fp16_values():
-    """Generate a comprehensive set of FP16 values from smallest to largest."""
+    """Generate a comprehensive set of FP16 values from smallest to largest, excluding infinity."""
     values = []
     
     # Special values
@@ -193,7 +774,7 @@ def generate_all_exact_fp16_values():
     for exp in range(-24, 16):  # From smallest denormal to largest normal
         value = 2.0 ** exp
         fp16_val = float(np.float16(value))
-        if fp16_val != 0.0:  # Skip if it underflows to zero
+        if fp16_val != 0.0 and not np.isinf(fp16_val):  # Skip if it underflows to zero or is infinity
             values.append(fp16_val)
             values.append(-fp16_val)
     
@@ -210,7 +791,7 @@ def generate_all_exact_fp16_values():
         for factor in [0.9, 0.99, 0.999, 1.0, 1.001, 1.01, 1.1]:
             value = boundary * factor
             fp16_val = float(np.float16(value))
-            if is_round_fp16(fp16_val) and fp16_val != 0.0:
+            if is_round_fp16(fp16_val) and fp16_val != 0.0 and not np.isinf(fp16_val):
                 values.append(fp16_val)
                 values.append(-fp16_val)
     
@@ -224,13 +805,13 @@ def generate_all_exact_fp16_values():
     for exp in range(-4, 5):
         value = 10.0 ** exp
         fp16_val = float(np.float16(value))
-        if is_round_fp16(fp16_val):
+        if is_round_fp16(fp16_val) and not np.isinf(fp16_val):
             values.append(fp16_val)
             values.append(-fp16_val)
-    
+
     # Sort, deduplicate, and verify
     unique_values = sorted(set(values))
-    verified_values = [v for v in unique_values if is_round_fp16(v)]
+    verified_values = [v for v in unique_values if is_round_fp16(v) and not np.isinf(v)]
     
     return verified_values
 
@@ -273,7 +854,7 @@ def test_fp16_comprehensive():
         print("\nFailures by bit position:")
         for bit, bit_failures in failures_by_bit.items():
             print(f"\nBit position {bit}: {len(bit_failures)} failures")
-            for i, failure in enumerate(bit_failures[:3]):  # Show first 3 failures per bit
+            for i, failure in enumerate(bit_failures[:]):  # Show first 3 failures per bit
                 if 'error' in failure:
                     print(f"  Error for value {failure['value']}: {failure['error']}")
                 else:
@@ -281,8 +862,7 @@ def test_fp16_comprehensive():
                     print(f"    Input:    {failure['input_binary']}")
                     print(f"    Result:   {failure['result_binary']}")
                     print(f"    Expected: {failure['expected_binary']}")
-            if len(bit_failures) > 3:
-                print(f"  ...and {len(bit_failures) - 3} more failures for bit {bit}")
+
     
     # Save detailed results to file
     with open("fp16_comprehensive_results.txt", "w") as f:
