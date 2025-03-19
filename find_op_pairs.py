@@ -11,6 +11,7 @@ from axes_parser import patch_reduce_ops, move_initializers_to_constant_for_matm
 
 
 
+
 def modify_onnx_graph_input(config, fault_model, bit_position=3):
 
     model_path = config["decoder_path"]

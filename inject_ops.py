@@ -8,6 +8,23 @@ from inject_utils.utils import delta_init, delta_init_int8
 
 from onnx import helper, TensorProto
 
+import numpy as np
+from onnxruntime_extensions import onnx_op, PyCustomOpDef
+
+@onnx_op(op_type="BitFlipFP16",
+         inputs=[PyCustomOpDef.dt_float16],
+         outputs=[PyCustomOpDef.dt_float16],
+         attrs=['bit_position'])
+def bit_flip_fp16(x, bit_position):
+    # x is assumed to be a numpy array of dtype np.float16.
+    # We view the data as 16-bit unsigned integers.
+    x_uint16 = x.view(np.uint16)
+    # Toggle the specified bit for all elements.
+    toggled = x_uint16 ^ (1 << bit_position)
+    # Convert the toggled result back to float16.
+    return toggled.view(np.float16)
+
+
 def create_quantized_fault_injection_weight(input_name, output_name, bit_position):
     nodes = []
     suffix = "_w"
