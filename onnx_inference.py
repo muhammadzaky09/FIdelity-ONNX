@@ -570,7 +570,7 @@ if __name__ == "__main__":
     }
 
     # Create Llama instance
-    persistent_llama = Llama(onnxdir='alpaca.onnx', config=llama_config)
+    persistent_llama = Llama(onnxdir='alpaca', config=llama_config)
 
     # Create CSV file for results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
