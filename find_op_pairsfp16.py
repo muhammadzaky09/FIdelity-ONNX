@@ -7,6 +7,7 @@ from inject_ops import (create_quantized_fault_injection, create_random_bitflip_
                         create_fp16_fault_injection_weight)
 import numpy as np
 from typing import Dict, Any, List, Set
+from axes_parser import patch_reduce_ops, move_initializers_to_constant_for_matmul
 
 def find_node_by_output(graph, output_name: str):
     """Find a node that produces the given output tensor"""
@@ -41,6 +42,7 @@ def modify_onnx_graph_input_fp16(config: Dict[str, Any], fault_model: str, bit_p
     
     # Load model
     model = onnx.load(model_path)
+    model = patch_reduce_ops(model, reduce_ops=("ReduceMean"))
     model = shape_inference.infer_shapes(model)
     
     # Get key tensor names
@@ -159,6 +161,8 @@ def modify_onnx_graph_weight_fp16(config: Dict[str, Any], fault_model: str, bit_
     
     # Load model
     model = onnx.load(model_path)
+    model = patch_reduce_ops(model, reduce_ops=("ReduceMean"))
+    model = move_initializers_to_constant_for_matmul(model)
     model = shape_inference.infer_shapes(model)
     
     # Get key tensor names
@@ -286,6 +290,7 @@ def modify_onnx_graph_random_fp16(config: Dict[str, Any], fault_model: str, bit_
     
     # Load model
     model = onnx.load(model_path)
+    model = patch_reduce_ops(model, reduce_ops=("ReduceMean"))
     model = shape_inference.infer_shapes(model)
     
     # Get output tensor name

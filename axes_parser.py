@@ -99,16 +99,16 @@ def move_initializers_to_constant_for_matmul(model):
 
     return model
 
-if __name__ == "__main__":
-    original_model_path = "decoders/fp16/decoder-merge-20.onnx"       # your original model
-    updated_model_path = "decoders/fp16/decoder-merge-20-patched.onnx"   # destination for patched model
+# if __name__ == "__main__":
+#     original_model_path = "decoders/fp16/decoder-merge-20.onnx"       # your original model
+#     updated_model_path = "decoders/fp16/decoder-merge-20-patched.onnx"   # destination for patched model
 
-    # Load the model.
-    model = onnx.load(original_model_path)
-    # First, patch reduce operators.
-    model = patch_reduce_ops(model, reduce_ops=("ReduceMean"))
-    # Next, move initializers to Constant nodes for MatMul.
-    model = move_initializers_to_constant_for_matmul(model)
+#     # Load the model.
+#     model = onnx.load(original_model_path)
+#     # First, patch reduce operators.
+#     model = patch_reduce_ops(model, reduce_ops=("ReduceMean"))
+#     # Next, move initializers to Constant nodes for MatMul.
+#     model = move_initializers_to_constant_for_matmul(model)
 
-    save_model(model, updated_model_path)
-    print("Saved patched model as", updated_model_path)
+#     save_model(model, updated_model_path)
+#     print("Saved patched model as", updated_model_path)
