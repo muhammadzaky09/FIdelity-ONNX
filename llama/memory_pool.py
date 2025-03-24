@@ -9,7 +9,7 @@ import psutil
 import math
 
 class OrtWrapper:
-    def __init__(self, onnxfile: str, custom_op_lib_path: str = 'onnx_bitflip_cuda.so'):
+    def __init__(self, onnxfile: str, custom_op_lib_path: str = 'onnx_bitflip.so'):
         assert os.path.exists(onnxfile)
         self.onnxfile = onnxfile
         sess_options = ort.SessionOptions()
