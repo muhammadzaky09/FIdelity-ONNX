@@ -570,7 +570,7 @@ if __name__ == "__main__":
     }
 
     # Create Llama instance
-    persistent_llama = Llama(onnxdir='decoders/alpaca.onnx', config=llama_config)
+    persistent_llama = Llama(onnxdir='alpaca.onnx', config=llama_config)
 
     # Create CSV file for results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -635,11 +635,11 @@ if __name__ == "__main__":
                 # Create faulty decoder for this configuration
                 logger.info(f"Creating faulty decoder for {fault_model} on bit position {bit_position}...")
                 if fault_model in ['INPUT', 'INPUT16']:
-                    faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
+                    faulty_path = modify_onnx_graph_input_fp16(config, fault_model, bit_position)
                 elif fault_model in ['WEIGHT', 'WEIGHT16']:
-                    faulty_path = modify_onnx_graph_weight(config, fault_model, bit_position)
+                    faulty_path = modify_onnx_graph_weight_fp16(config, fault_model, bit_position)
                 else:
-                    faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
+                    faulty_path = modify_onnx_graph_random_fp16(config, fault_model, bit_position)
                 
                 # Run both experiments with different questions
                 for experiment in range(2):
