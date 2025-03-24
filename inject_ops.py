@@ -11,18 +11,6 @@ from onnx import helper, TensorProto
 import numpy as np
 from onnxruntime_extensions import onnx_op, PyCustomOpDef
 
-@onnx_op(op_type="BitFlipFP16",
-         inputs=[PyCustomOpDef.dt_float16],
-         outputs=[PyCustomOpDef.dt_float16],
-         attrs=['bit_position'])
-def bit_flip_fp16(x, bit_position):
-    # x is assumed to be a numpy array of dtype np.float16.
-    # We view the data as 16-bit unsigned integers.
-    x_uint16 = x.view(np.uint16)
-    # Toggle the specified bit for all elements.
-    toggled = x_uint16 ^ (1 << bit_position)
-    # Convert the toggled result back to float16.
-    return toggled.view(np.float16)
 
 
 def create_quantized_fault_injection_weight(input_name, output_name, bit_position):
@@ -755,1570 +743,18 @@ def create_random_fault_injection(output_name: str, random_value: float):
     return nodes
 
 def create_random_bitflip_injection(output_name: str, bit_position: int):
-    """Create random bitflip injection using Shape operator to handle dynamic dimensions"""
     nodes = []
+    suffix = "_fp16"
+    faulty_output = f"{output_name}_faulty"
     
-    # 1. Get shape of tensor at runtime
+    # 1. Get the runtime shape of the input tensor.
     nodes.append(helper.make_node(
         'Shape',
         inputs=[output_name],
-        outputs=['runtime_shape']
-    ))
-    
-    # 2. Create random indices based on shape
-    nodes.append(helper.make_node(
-        'RandomUniformLike',
-        inputs=['runtime_shape'],
-        outputs=['indices'],
-        dtype=TensorProto.INT64
-    ))
-    
-    # 3. Gather the target value
-    nodes.append(helper.make_node(
-        "GatherND",
-        inputs=[output_name, "indices"],
-        outputs=["gathered_val"]
-    ))
-    
-    # 4. Create bitmask for the bit to flip
-    bitmask = 1 << bit_position
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["bitmask"],
-        value=helper.make_tensor(
-            name="const_bitmask",
-            data_type=TensorProto.INT32,
-            dims=[1],
-            vals=[bitmask]
-        )
-    ))
-    
-    # 5. Cast float to int bits for manipulation
-    nodes.append(helper.make_node(
-        "Cast",
-        inputs=["gathered_val"],
-        outputs=["gathered_float"],
-        to=TensorProto.FLOAT
-    ))
-    
-    # 6. Reinterpret float as int32 for bit manipulation
-    nodes.append(helper.make_node(
-        "BitShift",
-        inputs=["gathered_float"],
-        outputs=["float_as_int"],
-        direction="RIGHT",
-        shift_amount=0
-    ))
-    
-    # 7. Perform XOR to flip the bit
-    nodes.append(helper.make_node(
-        "BitwiseXor",
-        inputs=["float_as_int", "bitmask"],
-        outputs=["flipped_int"]
-    ))
-    
-    # 8. Reinterpret int back as float
-    nodes.append(helper.make_node(
-        "BitShift",
-        inputs=["flipped_int"],
-        outputs=["int_as_float"],
-        direction="LEFT",
-        shift_amount=0
-    ))
-    
-    # 9. Cast back to float32
-    nodes.append(helper.make_node(
-        "Cast",
-        inputs=["int_as_float"],
-        outputs=["flipped_float"],
-        to=TensorProto.FLOAT
-    ))
-    
-    # 10. Replace original value with flipped value using ScatterND
-    nodes.append(helper.make_node(
-        "ScatterND",
-        inputs=[output_name, "indices", "flipped_float"],
-        outputs=[f"{output_name}_faulty"],
-        reduction="none"
-    ))
-    
-    return nodes
-
-def create_fp16_bit_flip(input_name, output_name, bit_position):
-    """
-    Create ONNX nodes that implement IEEE-754 FP16 bit flipping at a specified position.
-    Improved mathematical approach that correctly handles all bit positions.
-    
-    Args:
-        input_name: Name of the input tensor (FLOAT)
-        output_name: Name of the output tensor (FLOAT)
-        bit_position: Position of bit to flip (0-15, where 0 is LSB of mantissa)
-        
-    Returns:
-        List of ONNX nodes implementing the bit flip operation
-    """
-    nodes = []
-    suffix = "_bf"
-    
-    # IEEE-754 FP16 parameters
-    sign_bit = 15
-    exponent_start = 10
-    exponent_bits = 5
-    mantissa_bits = 10
-    exponent_bias = 15
-    
-    # Basic constants
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["zero" + suffix],
-        value=helper.make_tensor(
-            name="zero_tensor" + suffix,
-            data_type=TensorProto.FLOAT,
-            dims=[],
-            vals=[0.0]
-        )
-    ))
-    
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["one" + suffix],
-        value=helper.make_tensor(
-            name="one_tensor" + suffix,
-            data_type=TensorProto.FLOAT,
-            dims=[],
-            vals=[1.0]
-        )
-    ))
-    
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["two" + suffix],
-        value=helper.make_tensor(
-            name="two_tensor" + suffix,
-            data_type=TensorProto.FLOAT,
-            dims=[],
-            vals=[2.0]
-        )
-    ))
-    
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["neg_one" + suffix],
-        value=helper.make_tensor(
-            name="neg_one_tensor" + suffix,
-            data_type=TensorProto.FLOAT,
-            dims=[],
-            vals=[-1.0]
-        )
-    ))
-    
-    # Bit position constants
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["bit_pos" + suffix],
-        value=helper.make_tensor(
-            name="bit_pos_tensor" + suffix,
-            data_type=TensorProto.INT64,
-            dims=[],
-            vals=[bit_position]
-        )
-    ))
-    
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["sign_bit_pos" + suffix],
-        value=helper.make_tensor(
-            name="sign_bit_pos_tensor" + suffix,
-            data_type=TensorProto.INT64,
-            dims=[],
-            vals=[sign_bit]
-        )
-    ))
-    
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["exp_start" + suffix],
-        value=helper.make_tensor(
-            name="exp_start_tensor" + suffix,
-            data_type=TensorProto.INT64,
-            dims=[],
-            vals=[exponent_start]
-        )
-    ))
-    
-    # Cast to FP16 for consistent behavior
-    nodes.append(helper.make_node(
-        "Cast",
-        inputs=[input_name],
-        outputs=["input_fp16" + suffix],
-        to=TensorProto.FLOAT16
-    ))
-    
-    # Cast back to float32 for calculations
-    nodes.append(helper.make_node(
-        "Cast",
-        inputs=["input_fp16" + suffix],
-        outputs=["input_fp32" + suffix],
-        to=TensorProto.FLOAT
-    ))
-    
-    # Check if input is negative or zero
-    nodes.append(helper.make_node(
-        "Less",
-        inputs=["input_fp32" + suffix, "zero" + suffix],
-        outputs=["is_negative" + suffix]
-    ))
-    
-    nodes.append(helper.make_node(
-        "Equal",
-        inputs=["input_fp32" + suffix, "zero" + suffix],
-        outputs=["is_zero" + suffix]
-    ))
-    
-    # --------------------------------
-    # 1. ADD SPECIAL ZERO HANDLING
-    # --------------------------------
-    
-    # For zero value, create special constants for each bit position
-    # For bit 0-9 (mantissa bits):
-    for mantissa_bit in range(10):
-        # Calculate the exact value that results from setting this bit in zero
-        value = 2.0 ** (mantissa_bit - 24)  # 2^(bit_pos - 24) for denormal values
-        nodes.append(helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=[f"zero_mantissa_bit_{mantissa_bit}" + suffix],
-            value=helper.make_tensor(
-                name=f"zero_mantissa_bit_{mantissa_bit}_tensor" + suffix,
-                data_type=TensorProto.FLOAT16,
-                dims=[],
-                vals=[float(value)]
-            )
-        ))
-    
-    # For bit 10-14 (exponent bits):
-    for exp_bit_idx, exp_bit in enumerate(range(10, 15)):
-        # Each exponent bit creates a specific power of 2
-        value = 2.0 ** (exp_bit_idx)  # 2^0 for bit 10, 2^1 for bit 11, etc.
-        nodes.append(helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=[f"zero_exp_bit_{exp_bit}" + suffix],
-            value=helper.make_tensor(
-                name=f"zero_exp_bit_{exp_bit}_tensor" + suffix,
-                data_type=TensorProto.FLOAT16,
-                dims=[],
-                vals=[float(value)]
-            )
-        ))
-    
-    # For bit 15 (sign bit): just -0.0
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["zero_sign_bit_15" + suffix],
-        value=helper.make_tensor(
-            name="zero_sign_bit_15_tensor" + suffix,
-            data_type=TensorProto.FLOAT16,
-            dims=[],
-            vals=[-0.0]
-        )
-    ))
-    
-    # --------------------------------
-    # 2. DETERMINE BIT TYPE
-    # --------------------------------
-    
-    # Check if sign bit
-    nodes.append(helper.make_node(
-        "Equal",
-        inputs=["bit_pos" + suffix, "sign_bit_pos" + suffix],
-        outputs=["is_sign_bit" + suffix]
-    ))
-    
-    # Check if exponent bit
-    nodes.append(helper.make_node(
-        "Less",
-        inputs=["bit_pos" + suffix, "sign_bit_pos" + suffix],
-        outputs=["lt_sign" + suffix]
-    ))
-    
-    nodes.append(helper.make_node(
-        "GreaterOrEqual",
-        inputs=["bit_pos" + suffix, "exp_start" + suffix],
-        outputs=["ge_exp_start" + suffix]
-    ))
-    
-    nodes.append(helper.make_node(
-        "And",
-        inputs=["lt_sign" + suffix, "ge_exp_start" + suffix],
-        outputs=["is_exp_bit" + suffix]
-    ))
-    
-    # Check if mantissa bit
-    nodes.append(helper.make_node(
-        "Less",
-        inputs=["bit_pos" + suffix, "exp_start" + suffix],
-        outputs=["is_mantissa_bit" + suffix]
-    ))
-    
-    # --------------------------------
-    # 3. GET ABSOLUTE VALUE AND CALCULATE EXPONENT
-    # --------------------------------
-    
-    nodes.append(helper.make_node(
-        "Abs",
-        inputs=["input_fp32" + suffix],
-        outputs=["abs_value" + suffix]
-    ))
-    
-    # Add a small epsilon to avoid log(0)
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["epsilon" + suffix],
-        value=helper.make_tensor(
-            name="epsilon_tensor" + suffix,
-            data_type=TensorProto.FLOAT,
-            dims=[],
-            vals=[1e-10]
-        )
-    ))
-    
-    nodes.append(helper.make_node(
-        "Add",
-        inputs=["abs_value" + suffix, "epsilon" + suffix],
-        outputs=["safe_abs" + suffix]
-    ))
-    
-    # Calculate log2 with higher precision
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["ln2" + suffix],
-        value=helper.make_tensor(
-            name="ln2_tensor" + suffix,
-            data_type=TensorProto.FLOAT,
-            dims=[],
-            vals=[0.693147180559945]  # ln(2)
-        )
-    ))
-    
-    nodes.append(helper.make_node(
-        "Log",
-        inputs=["safe_abs" + suffix],
-        outputs=["log_value" + suffix]
-    ))
-    
-    nodes.append(helper.make_node(
-        "Div",
-        inputs=["log_value" + suffix, "ln2" + suffix],
-        outputs=["log2_value" + suffix]
-    ))
-    
-    # Handle zero input
-    nodes.append(helper.make_node(
-        "Where",
-        inputs=["is_zero" + suffix, "zero" + suffix, "log2_value" + suffix],
-        outputs=["safe_log2" + suffix]
-    ))
-    
-    # Calculate exponent
-    nodes.append(helper.make_node(
-        "Floor",
-        inputs=["safe_log2" + suffix],
-        outputs=["unbiased_exp" + suffix]
-    ))
-    
-    # Add exponent bias for FP16
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["exp_bias" + suffix],
-        value=helper.make_tensor(
-            name="exp_bias_tensor" + suffix,
-            data_type=TensorProto.FLOAT,
-            dims=[],
-            vals=[float(exponent_bias)]
-        )
-    ))
-    
-    nodes.append(helper.make_node(
-        "Add",
-        inputs=["unbiased_exp" + suffix, "exp_bias" + suffix],
-        outputs=["biased_exp" + suffix]
-    ))
-    
-    # --------------------------------
-    # 4. SIGN BIT HANDLING
-    # --------------------------------
-    
-    # Simply negate the input
-    nodes.append(helper.make_node(
-        "Neg",
-        inputs=["input_fp32" + suffix],
-        outputs=["sign_flipped_raw" + suffix]
-    ))
-    
-    # Re-quantize to FP16 precision
-    nodes.append(helper.make_node(
-        "Cast",
-        inputs=["sign_flipped_raw" + suffix],
-        outputs=["sign_flipped_fp16" + suffix],
-        to=TensorProto.FLOAT16
-    ))
-    
-    nodes.append(helper.make_node(
-        "Cast",
-        inputs=["sign_flipped_fp16" + suffix],
-        outputs=["sign_flipped" + suffix],
-        to=TensorProto.FLOAT
-    ))
-    
-    # --------------------------------
-    # 5. EXPONENT BIT HANDLING - IMPROVED APPROACH
-    # --------------------------------
-    
-    # Improved approach for exponent bits - use pre-calculated constants for each bit
-    # We'll create constants for each exponent bit position
-    
-    # Create a value to represent each exponent bit (based on biased exponent)
-    for exp_bit_idx, exp_bit in enumerate(range(10, 15)):
-        bit_value = 1 << exp_bit_idx  # 1, 2, 4, 8, 16
-        nodes.append(helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=[f"exp_bit_value_{exp_bit}" + suffix],
-            value=helper.make_tensor(
-                name=f"exp_bit_value_{exp_bit}_tensor" + suffix,
-                data_type=TensorProto.FLOAT,
-                dims=[],
-                vals=[float(bit_value)]
-            )
-        ))
-    
-    # Extract the exponent bits (convert to INT32 for bit operations)
-    nodes.append(helper.make_node(
-        "Cast",
-        inputs=["biased_exp" + suffix],
-        outputs=["exp_int" + suffix],
-        to=TensorProto.INT32
-    ))
-    
-    # Create a mask for each exponent bit
-    for exp_bit_idx, exp_bit in enumerate(range(10, 15)):
-        bit_mask = 1 << exp_bit_idx
-        nodes.append(helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=[f"exp_bit_mask_{exp_bit}" + suffix],
-            value=helper.make_tensor(
-                name=f"exp_bit_mask_{exp_bit}_tensor" + suffix,
-                data_type=TensorProto.INT32,
-                dims=[],
-                vals=[bit_mask]
-            )
-        ))
-    
-    # Check if each exponent bit is set
-    for exp_bit in range(10, 15):
-        nodes.append(helper.make_node(
-            "BitwiseAnd",
-            inputs=["exp_int" + suffix, f"exp_bit_mask_{exp_bit}" + suffix],
-            outputs=[f"exp_bit_check_{exp_bit}" + suffix]
-        ))
-        
-        nodes.append(helper.make_node(
-            "Greater",
-            inputs=[f"exp_bit_check_{exp_bit}" + suffix, "zero" + suffix],
-            outputs=[f"exp_bit_is_set_{exp_bit}" + suffix]
-        ))
-    
-    # Calculate scaling factor for each exponent bit
-    # When bit is set: divide by 2^bit_weight
-    # When bit is clear: multiply by 2^bit_weight
-    for exp_bit_idx, exp_bit in enumerate(range(10, 15)):
-        # Get the power of 2 this bit represents
-        scaling = 2.0 ** (2 ** exp_bit_idx)  # 2^(2^idx)
-        
-        nodes.append(helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=[f"exp_scaling_{exp_bit}" + suffix],
-            value=helper.make_tensor(
-                name=f"exp_scaling_{exp_bit}_tensor" + suffix,
-                data_type=TensorProto.FLOAT,
-                dims=[],
-                vals=[scaling]
-            )
-        ))
-        
-        nodes.append(helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=[f"exp_inv_scaling_{exp_bit}" + suffix],
-            value=helper.make_tensor(
-                name=f"exp_inv_scaling_{exp_bit}_tensor" + suffix,
-                data_type=TensorProto.FLOAT,
-                dims=[],
-                vals=[1.0/scaling]
-            )
-        ))
-    
-    # For each exponent bit, if this is the target bit:
-    # - If bit is set, use inv_scaling
-    # - If bit is clear, use scaling
-    for exp_bit in range(10, 15):
-        # Check if this is the target bit
-        nodes.append(helper.make_node(
-            "Equal",
-            inputs=["bit_pos" + suffix, f"exp_bit_value_{exp_bit}" + suffix],
-            outputs=[f"is_target_exp_bit_{exp_bit}" + suffix]
-        ))
-        
-        # Choose scale direction based on bit status
-        nodes.append(helper.make_node(
-            "Where",
-            inputs=[f"exp_bit_is_set_{exp_bit}" + suffix, f"exp_inv_scaling_{exp_bit}" + suffix, f"exp_scaling_{exp_bit}" + suffix],
-            outputs=[f"exp_scale_factor_{exp_bit}" + suffix]
-        ))
-        
-        # Apply scaling if this is the target bit
-        nodes.append(helper.make_node(
-            "Mul",
-            inputs=["input_fp32" + suffix, f"exp_scale_factor_{exp_bit}" + suffix],
-            outputs=[f"exp_flipped_{exp_bit}_raw" + suffix]
-        ))
-        
-        # Re-quantize to FP16 precision
-        nodes.append(helper.make_node(
-            "Cast",
-            inputs=[f"exp_flipped_{exp_bit}_raw" + suffix],
-            outputs=[f"exp_flipped_{exp_bit}_fp16" + suffix],
-            to=TensorProto.FLOAT16
-        ))
-        
-        nodes.append(helper.make_node(
-            "Cast",
-            inputs=[f"exp_flipped_{exp_bit}_fp16" + suffix],
-            outputs=[f"exp_flipped_{exp_bit}" + suffix],
-            to=TensorProto.FLOAT
-        ))
-    
-    # --------------------------------
-    # 6. MANTISSA BIT HANDLING - EXACT CALCULATION
-    # --------------------------------
-    
-    # Get power of 2 for the exponent - for scaling mantissa bit weights
-    nodes.append(helper.make_node(
-        "Pow",
-        inputs=["two" + suffix, "unbiased_exp" + suffix],
-        outputs=["pow2_exp" + suffix]
-    ))
-    
-    # Safe version that handles zero input
-    nodes.append(helper.make_node(
-        "Where",
-        inputs=["is_zero" + suffix, "one" + suffix, "pow2_exp" + suffix],
-        outputs=["safe_pow2_exp" + suffix]
-    ))
-    
-    # Create constants for each mantissa bit weight
-    for mantissa_bit in range(10):
-        # The weight for each mantissa bit depends on its position:
-        # bit 0 (LSB) = 2^-10, bit 1 = 2^-9, etc.
-        weight = 2.0 ** (mantissa_bit - 10)
-        nodes.append(helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=[f"mantissa_weight_{mantissa_bit}" + suffix],
-            value=helper.make_tensor(
-                name=f"mantissa_weight_{mantissa_bit}_tensor" + suffix,
-                data_type=TensorProto.FLOAT,
-                dims=[],
-                vals=[weight]
-            )
-        ))
-    
-    # Extract the normalized mantissa
-    nodes.append(helper.make_node(
-        "Div",
-        inputs=["abs_value" + suffix, "safe_pow2_exp" + suffix],
-        outputs=["norm_mantissa_raw" + suffix]
-    ))
-    
-    # Safe normalized mantissa (handle zero)
-    nodes.append(helper.make_node(
-        "Where",
-        inputs=["is_zero" + suffix, "zero" + suffix, "norm_mantissa_raw" + suffix],
-        outputs=["norm_mantissa" + suffix]
-    ))
-    
-    # Remove the implicit leading 1 to get just the fractional part
-    nodes.append(helper.make_node(
-        "Sub",
-        inputs=["norm_mantissa" + suffix, "one" + suffix],
-        outputs=["mantissa_frac" + suffix]
-    ))
-    
-    # Calculate the mantissa as an integer (0-1023)
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["mantissa_scale" + suffix],
-        value=helper.make_tensor(
-            name="mantissa_scale_tensor" + suffix,
-            data_type=TensorProto.FLOAT,
-            dims=[],
-            vals=[1024.0]  # 2^10
-        )
-    ))
-    
-    nodes.append(helper.make_node(
-        "Mul",
-        inputs=["mantissa_frac" + suffix, "mantissa_scale" + suffix],
-        outputs=["scaled_mantissa_raw" + suffix]
-    ))
-    
-    # Round to nearest integer to avoid floating-point errors
-    nodes.append(helper.make_node(
-        "Round",
-        inputs=["scaled_mantissa_raw" + suffix],
-        outputs=["scaled_mantissa" + suffix]
-    ))
-    
-    # For each mantissa bit 0-9, determine if it's set
-    for mantissa_bit in range(10):
-        # Create bit mask for this position
-        bit_mask = 1 << mantissa_bit
-        nodes.append(helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=[f"mantissa_bit_mask_{mantissa_bit}" + suffix],
-            value=helper.make_tensor(
-                name=f"mantissa_bit_mask_{mantissa_bit}_tensor" + suffix,
-                data_type=TensorProto.FLOAT,
-                dims=[],
-                vals=[float(bit_mask)]
-            )
-        ))
-        
-        # Check if this bit is set in the mantissa
-        nodes.append(helper.make_node(
-            "Mod",
-            inputs=["scaled_mantissa" + suffix, f"mantissa_bit_mask_{mantissa_bit}" + suffix],
-            outputs=[f"bit_check_{mantissa_bit}" + suffix]
-        ))
-        
-        nodes.append(helper.make_node(
-            "Greater",
-            inputs=[f"bit_check_{mantissa_bit}" + suffix, "zero" + suffix],
-            outputs=[f"mantissa_bit_is_set_{mantissa_bit}" + suffix]
-        ))
-        
-        # Scale the bit weight by the exponent
-        nodes.append(helper.make_node(
-            "Mul",
-            inputs=[f"mantissa_weight_{mantissa_bit}" + suffix, "safe_pow2_exp" + suffix],
-            outputs=[f"scaled_mantissa_weight_{mantissa_bit}" + suffix]
-        ))
-        
-        # Account for sign
-        nodes.append(helper.make_node(
-            "Where",
-            inputs=["is_negative" + suffix, "neg_one" + suffix, "one" + suffix],
-            outputs=["sign_factor" + suffix]
-        ))
-        
-        nodes.append(helper.make_node(
-            "Mul",
-            inputs=[f"scaled_mantissa_weight_{mantissa_bit}" + suffix, "sign_factor" + suffix],
-            outputs=[f"signed_mantissa_weight_{mantissa_bit}" + suffix]
-        ))
-        
-        # For 0->1, add weight; for 1->0, subtract weight
-        nodes.append(helper.make_node(
-            "Neg",
-            inputs=[f"signed_mantissa_weight_{mantissa_bit}" + suffix],
-            outputs=[f"neg_signed_mantissa_weight_{mantissa_bit}" + suffix]
-        ))
-        
-        nodes.append(helper.make_node(
-            "Where",
-            inputs=[f"mantissa_bit_is_set_{mantissa_bit}" + suffix, f"neg_signed_mantissa_weight_{mantissa_bit}" + suffix, f"signed_mantissa_weight_{mantissa_bit}" + suffix],
-            outputs=[f"mantissa_delta_{mantissa_bit}" + suffix]
-        ))
-        
-        # Apply delta if this is the target bit
-        nodes.append(helper.make_node(
-            "Equal",
-            inputs=["bit_pos" + suffix, "mantissa_bit" + suffix],
-            outputs=[f"is_target_mantissa_bit_{mantissa_bit}" + suffix]
-        ))
-        
-        nodes.append(helper.make_node(
-            "Add",
-            inputs=["input_fp32" + suffix, f"mantissa_delta_{mantissa_bit}" + suffix],
-            outputs=[f"mantissa_flipped_{mantissa_bit}_raw" + suffix]
-        ))
-        
-        # Re-quantize to FP16 precision
-        nodes.append(helper.make_node(
-            "Cast",
-            inputs=[f"mantissa_flipped_{mantissa_bit}_raw" + suffix],
-            outputs=[f"mantissa_flipped_{mantissa_bit}_fp16" + suffix],
-            to=TensorProto.FLOAT16
-        ))
-        
-        nodes.append(helper.make_node(
-            "Cast",
-            inputs=[f"mantissa_flipped_{mantissa_bit}_fp16" + suffix],
-            outputs=[f"mantissa_flipped_{mantissa_bit}" + suffix],
-            to=TensorProto.FLOAT
-        ))
-    
-    # --------------------------------
-    # 7. COMBINE OUTPUTS WITH SPECIAL ZERO HANDLING
-    # --------------------------------
-    
-    # Combine the sign, exponent, and mantissa bit flipping results
-    
-    # First handle zero value with precomputed constants
-    nodes.append(helper.make_node(
-        "And",
-        inputs=["is_zero" + suffix, "is_sign_bit" + suffix],
-        outputs=["is_zero_sign_bit" + suffix]
-    ))
-    
-    # For each bit, create a condition to check if it's zero and the target bit
-    for bit in range(16):
-        nodes.append(helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=[f"bit_const_{bit}" + suffix],
-            value=helper.make_tensor(
-                name=f"bit_const_{bit}_tensor" + suffix,
-                data_type=TensorProto.INT64,
-                dims=[],
-                vals=[bit]
-            )
-        ))
-        
-        nodes.append(helper.make_node(
-            "Equal",
-            inputs=["bit_pos" + suffix, f"bit_const_{bit}" + suffix],
-            outputs=[f"is_bit_{bit}" + suffix]
-        ))
-        
-        nodes.append(helper.make_node(
-            "And",
-            inputs=["is_zero" + suffix, f"is_bit_{bit}" + suffix],
-            outputs=[f"is_zero_bit_{bit}" + suffix]
-        ))
-    
-    # Combine all zero bit cases
-    # For mantissa bits 0-9
-    for mantissa_bit in range(10):
-        nodes.append(helper.make_node(
-            "Cast",
-            inputs=[f"zero_mantissa_bit_{mantissa_bit}" + suffix],
-            outputs=[f"zero_mantissa_bit_{mantissa_bit}_fp32" + suffix],
-            to=TensorProto.FLOAT
-        ))
-    
-    # For exponent bits 10-14
-    for exp_bit in range(10, 15):
-        nodes.append(helper.make_node(
-            "Cast",
-            inputs=[f"zero_exp_bit_{exp_bit}" + suffix],
-            outputs=[f"zero_exp_bit_{exp_bit}_fp32" + suffix],
-            to=TensorProto.FLOAT
-        ))
-    
-    # For sign bit
-    nodes.append(helper.make_node(
-        "Cast",
-        inputs=["zero_sign_bit_15" + suffix],
-        outputs=["zero_sign_bit_15_fp32" + suffix],
-        to=TensorProto.FLOAT
-    ))
-    
-    # Create a result tensor for non-zero handling
-    # Start with result of mantissa bit 0, then update with conditions
-    nodes.append(helper.make_node(
-        "Identity",
-        inputs=["mantissa_flipped_0" + suffix],
-        outputs=["normal_result" + suffix]
-    ))
-    
-    # For each mantissa bit 1-9, update if it's the target bit
-    for mantissa_bit in range(1, 10):
-        nodes.append(helper.make_node(
-            "Where",
-            inputs=[f"is_target_mantissa_bit_{mantissa_bit}" + suffix, f"mantissa_flipped_{mantissa_bit}" + suffix, "normal_result" + suffix],
-            outputs=["temp_result" + suffix]
-        ))
-        
-        nodes.append(helper.make_node(
-            "Identity",
-            inputs=["temp_result" + suffix],
-            outputs=["normal_result" + suffix]
-        ))
-    
-    # For each exponent bit 10-14, update if it's the target bit
-    for exp_bit in range(10, 15):
-        nodes.append(helper.make_node(
-            "Where",
-            inputs=[f"is_target_exp_bit_{exp_bit}" + suffix, f"exp_flipped_{exp_bit}" + suffix, "normal_result" + suffix],
-            outputs=["temp_result" + suffix]
-        ))
-        
-        nodes.append(helper.make_node(
-            "Identity",
-            inputs=["temp_result" + suffix],
-            outputs=["normal_result" + suffix]
-        ))
-    
-    # Update if it's the sign bit
-    nodes.append(helper.make_node(
-        "Where",
-        inputs=["is_sign_bit" + suffix, "sign_flipped" + suffix, "normal_result" + suffix],
-        outputs=["non_zero_result" + suffix]
-    ))
-    
-    # Combine zero and non-zero results
-    # Start with zero case for mantissa bit 0
-    nodes.append(helper.make_node(
-        "Where",
-        inputs=[f"is_zero_bit_0" + suffix, f"zero_mantissa_bit_0_fp32" + suffix, "non_zero_result" + suffix],
-        outputs=["final_result" + suffix]
-    ))
-    
-    # Handle other zero bit cases
-    for bit in range(1, 16):
-        if bit < 10:
-            zero_val = f"zero_mantissa_bit_{bit}_fp32" + suffix
-        elif bit < 15:
-            zero_val = f"zero_exp_bit_{bit}_fp32" + suffix
-        else:
-            zero_val = "zero_sign_bit_15_fp32" + suffix
-        
-        nodes.append(helper.make_node(
-            "Where",
-            inputs=[f"is_zero_bit_{bit}" + suffix, zero_val, "final_result" + suffix],
-            outputs=["temp_final" + suffix]
-        ))
-        
-        nodes.append(helper.make_node(
-            "Identity",
-            inputs=["temp_final" + suffix],
-            outputs=["final_result" + suffix]
-        ))
-    
-    # Return the final result
-    nodes.append(helper.make_node(
-        "Identity",
-        inputs=["final_result" + suffix],
-        outputs=[output_name]
-    ))
-    
-    return nodes
-
-# def create_fp16_bit_flip(input_name, output_name, bit_position):
-#     """
-#     Create ONNX nodes that implement IEEE-754 FP16 bit flipping at a specified position.
-#     Correctly handles all bit positions in the IEEE-754 format, including negative numbers.
-    
-#     Args:
-#         input_name: Name of the input tensor (FLOAT)
-#         output_name: Name of the output tensor (FLOAT)
-#         bit_position: Position of bit to flip (0-15, where 0 is LSB of mantissa)
-        
-#     Returns:
-#         List of ONNX nodes implementing the bit flip operation
-#     """
-#     nodes = []
-#     suffix = "_bf"
-    
-#     # IEEE-754 FP16 parameters
-#     sign_bit = 15
-#     exponent_start = 10
-#     exponent_bits = 5
-#     mantissa_bits = 10
-#     exponent_bias = 15
-    
-#     # Basic constants
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["zero" + suffix],
-#         value=helper.make_tensor(
-#             name="zero_tensor" + suffix,
-#             data_type=TensorProto.FLOAT,
-#             dims=[],
-#             vals=[0.0]
-#         )
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["one" + suffix],
-#         value=helper.make_tensor(
-#             name="one_tensor" + suffix,
-#             data_type=TensorProto.FLOAT,
-#             dims=[],
-#             vals=[1.0]
-#         )
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["two" + suffix],
-#         value=helper.make_tensor(
-#             name="two_tensor" + suffix,
-#             data_type=TensorProto.FLOAT,
-#             dims=[],
-#             vals=[2.0]
-#         )
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["neg_one" + suffix],
-#         value=helper.make_tensor(
-#             name="neg_one_tensor" + suffix,
-#             data_type=TensorProto.FLOAT,
-#             dims=[],
-#             vals=[-1.0]
-#         )
-#     ))
-    
-#     # Bit position constants
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["bit_pos" + suffix],
-#         value=helper.make_tensor(
-#             name="bit_pos_tensor" + suffix,
-#             data_type=TensorProto.INT64,
-#             dims=[],
-#             vals=[bit_position]
-#         )
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["sign_bit_pos" + suffix],
-#         value=helper.make_tensor(
-#             name="sign_bit_pos_tensor" + suffix,
-#             data_type=TensorProto.INT64,
-#             dims=[],
-#             vals=[sign_bit]
-#         )
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["exp_start" + suffix],
-#         value=helper.make_tensor(
-#             name="exp_start_tensor" + suffix,
-#             data_type=TensorProto.INT64,
-#             dims=[],
-#             vals=[exponent_start]
-#         )
-#     ))
-    
-#     # Ensure FP16 precision at the start
-#     nodes.append(helper.make_node(
-#         "Cast",
-#         inputs=[input_name],
-#         outputs=["input_fp16" + suffix],
-#         to=TensorProto.FLOAT16
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Cast",
-#         inputs=["input_fp16" + suffix],
-#         outputs=["input_fp32" + suffix],
-#         to=TensorProto.FLOAT
-#     ))
-    
-#     # Check if input is negative
-#     nodes.append(helper.make_node(
-#         "Less",
-#         inputs=["input_fp32" + suffix, "zero" + suffix],
-#         outputs=["is_negative" + suffix]
-#     ))
-    
-#     # --------------------------------
-#     # 1. DETERMINE BIT TYPE
-#     # --------------------------------
-    
-#     # Check if sign bit
-#     nodes.append(helper.make_node(
-#         "Equal",
-#         inputs=["bit_pos" + suffix, "sign_bit_pos" + suffix],
-#         outputs=["is_sign_bit" + suffix]
-#     ))
-    
-#     # Check if exponent bit
-#     nodes.append(helper.make_node(
-#         "Less",
-#         inputs=["bit_pos" + suffix, "sign_bit_pos" + suffix],
-#         outputs=["lt_sign" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "GreaterOrEqual",
-#         inputs=["bit_pos" + suffix, "exp_start" + suffix],
-#         outputs=["ge_exp_start" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "And",
-#         inputs=["lt_sign" + suffix, "ge_exp_start" + suffix],
-#         outputs=["is_exp_bit" + suffix]
-#     ))
-    
-#     # Check if mantissa bit
-#     nodes.append(helper.make_node(
-#         "Less",
-#         inputs=["bit_pos" + suffix, "exp_start" + suffix],
-#         outputs=["is_mantissa_bit" + suffix]
-#     ))
-    
-#     # --------------------------------
-#     # 2. SIGN BIT HANDLING
-#     # --------------------------------
-    
-#     # Simply negate the input
-#     nodes.append(helper.make_node(
-#         "Neg",
-#         inputs=["input_fp32" + suffix],
-#         outputs=["sign_flipped" + suffix]
-#     ))
-    
-#     # --------------------------------
-#     # 3. EXPONENT BIT HANDLING
-#     # --------------------------------
-    
-#     # Get absolute value
-#     nodes.append(helper.make_node(
-#         "Abs",
-#         inputs=["input_fp32" + suffix],
-#         outputs=["abs_value" + suffix]
-#     ))
-    
-#     # Check if input is zero
-#     nodes.append(helper.make_node(
-#         "Equal",
-#         inputs=["abs_value" + suffix, "zero" + suffix],
-#         outputs=["is_zero" + suffix]
-#     ))
-    
-#     # Calculate log2
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["ln2" + suffix],
-#         value=helper.make_tensor(
-#             name="ln2_tensor" + suffix,
-#             data_type=TensorProto.FLOAT,
-#             dims=[],
-#             vals=[0.693147]  # ln(2)
-#         )
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Log",
-#         inputs=["abs_value" + suffix],
-#         outputs=["log_value" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Div",
-#         inputs=["log_value" + suffix, "ln2" + suffix],
-#         outputs=["log2_value" + suffix]
-#     ))
-    
-#     # Handle zero input
-#     nodes.append(helper.make_node(
-#         "Where",
-#         inputs=["is_zero" + suffix, "zero" + suffix, "log2_value" + suffix],
-#         outputs=["safe_log2" + suffix]
-#     ))
-    
-#     # Calculate exponent
-#     nodes.append(helper.make_node(
-#         "Floor",
-#         inputs=["safe_log2" + suffix],
-#         outputs=["unbiased_exp" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["exp_bias" + suffix],
-#         value=helper.make_tensor(
-#             name="exp_bias_tensor" + suffix,
-#             data_type=TensorProto.FLOAT,
-#             dims=[],
-#             vals=[float(exponent_bias)]
-#         )
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Add",
-#         inputs=["unbiased_exp" + suffix, "exp_bias" + suffix],
-#         outputs=["biased_exp" + suffix]
-#     ))
-    
-#     # Calculate bit position relative to exponent field
-#     nodes.append(helper.make_node(
-#         "Sub",
-#         inputs=["bit_pos" + suffix, "exp_start" + suffix],
-#         outputs=["exp_rel_pos" + suffix]
-#     ))
-    
-#     # Calculate bit weight (2^position)
-#     nodes.append(helper.make_node(
-#         "Cast",
-#         inputs=["exp_rel_pos" + suffix],
-#         outputs=["exp_rel_pos_float" + suffix],
-#         to=TensorProto.FLOAT
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Pow",
-#         inputs=["two" + suffix, "exp_rel_pos_float" + suffix],
-#         outputs=["exp_bit_weight" + suffix]
-#     ))
-    
-#     # Check if the bit is set
-#     nodes.append(helper.make_node(
-#         "Div",
-#         inputs=["biased_exp" + suffix, "exp_bit_weight" + suffix],
-#         outputs=["exp_div_result" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Floor",
-#         inputs=["exp_div_result" + suffix],
-#         outputs=["exp_div_floor" + suffix]
-#     ))
-    
-#     # Calculate modulo 2
-#     nodes.append(helper.make_node(
-#         "Div",
-#         inputs=["exp_div_floor" + suffix, "two" + suffix],
-#         outputs=["exp_div_half" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Floor",
-#         inputs=["exp_div_half" + suffix],
-#         outputs=["exp_half_floor" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Mul",
-#         inputs=["exp_half_floor" + suffix, "two" + suffix],
-#         outputs=["exp_double_half_floor" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Sub",
-#         inputs=["exp_div_floor" + suffix, "exp_double_half_floor" + suffix],
-#         outputs=["exp_bit" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Equal",
-#         inputs=["exp_bit" + suffix, "one" + suffix],
-#         outputs=["exp_bit_is_one" + suffix]
-#     ))
-    
-#     # Calculate the scale factor for flipping the exponent bit
-#     nodes.append(helper.make_node(
-#         "Pow",
-#         inputs=["two" + suffix, "exp_bit_weight" + suffix],
-#         outputs=["exp_scale_factor" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Div",
-#         inputs=["one" + suffix, "exp_scale_factor" + suffix],
-#         outputs=["exp_scale_down" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Where",
-#         inputs=["exp_bit_is_one" + suffix, "exp_scale_down" + suffix, "exp_scale_factor" + suffix],
-#         outputs=["exp_scale" + suffix]
-#     ))
-    
-#     # Apply the exponent bit flip
-#     nodes.append(helper.make_node(
-#         "Mul",
-#         inputs=["input_fp32" + suffix, "exp_scale" + suffix],
-#         outputs=["exp_flipped_raw" + suffix]
-#     ))
-    
-#     # Re-quantize to FP16 precision
-#     nodes.append(helper.make_node(
-#         "Cast",
-#         inputs=["exp_flipped_raw" + suffix],
-#         outputs=["exp_flipped_fp16" + suffix],
-#         to=TensorProto.FLOAT16
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Cast",
-#         inputs=["exp_flipped_fp16" + suffix],
-#         outputs=["exp_flipped" + suffix],
-#         to=TensorProto.FLOAT
-#     ))
-    
-#     # --------------------------------
-#     # 4. MANTISSA BIT HANDLING WITH SIGN CONSIDERATION
-#     # --------------------------------
-    
-#     # Get the power of 2 exponent
-#     nodes.append(helper.make_node(
-#         "Pow",
-#         inputs=["two" + suffix, "unbiased_exp" + suffix],
-#         outputs=["pow2_exp" + suffix]
-#     ))
-    
-#     # Handle zero input for division
-#     nodes.append(helper.make_node(
-#         "Where",
-#         inputs=["is_zero" + suffix, "one" + suffix, "pow2_exp" + suffix],
-#         outputs=["safe_pow2_exp" + suffix]
-#     ))
-    
-#     # Calculate the exact bit value in the IEEE-754 representation
-#     # For mantissa bits, we need 2^(bit_position-10) * 2^exponent
-#     nodes.append(helper.make_node(
-#         "Cast",
-#         inputs=["bit_pos" + suffix],
-#         outputs=["bit_pos_float" + suffix],
-#         to=TensorProto.FLOAT
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["ten_float" + suffix],
-#         value=helper.make_tensor(
-#             name="ten_float_tensor" + suffix,
-#             data_type=TensorProto.FLOAT,
-#             dims=[],
-#             vals=[10.0]
-#         )
-#     ))
-    
-#     # Calculate bit_position - 10
-#     nodes.append(helper.make_node(
-#         "Sub",
-#         inputs=["bit_pos_float" + suffix, "ten_float" + suffix],
-#         outputs=["mantissa_bit_adj" + suffix]
-#     ))
-    
-#     # Calculate 2^(bit_position - 10)
-#     nodes.append(helper.make_node(
-#         "Pow",
-#         inputs=["two" + suffix, "mantissa_bit_adj" + suffix],
-#         outputs=["mantissa_bit_val" + suffix]
-#     ))
-    
-#     # Multiply by 2^exponent to get the actual bit weight
-#     nodes.append(helper.make_node(
-#         "Mul",
-#         inputs=["mantissa_bit_val" + suffix, "safe_pow2_exp" + suffix],
-#         outputs=["mantissa_bit_weight" + suffix]
-#     ))
-    
-#     # Calculate normalized mantissa to extract the bit value
-#     nodes.append(helper.make_node(
-#         "Div",
-#         inputs=["abs_value" + suffix, "safe_pow2_exp" + suffix],
-#         outputs=["norm_mantissa" + suffix]
-#     ))
-    
-#     # Handle zero
-#     nodes.append(helper.make_node(
-#         "Where",
-#         inputs=["is_zero" + suffix, "zero" + suffix, "norm_mantissa" + suffix],
-#         outputs=["safe_norm_mantissa" + suffix]
-#     ))
-    
-#     # Remove leading 1
-#     nodes.append(helper.make_node(
-#         "Sub",
-#         inputs=["safe_norm_mantissa" + suffix, "one" + suffix],
-#         outputs=["mantissa_frac" + suffix]
-#     ))
-    
-#     # Scale to integer range [0, 1024)
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["mantissa_scale" + suffix],
-#         value=helper.make_tensor(
-#             name="mantissa_scale_tensor" + suffix,
-#             data_type=TensorProto.FLOAT,
-#             dims=[],
-#             vals=[1024.0]  # 2^10
-#         )
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Mul",
-#         inputs=["mantissa_frac" + suffix, "mantissa_scale" + suffix],
-#         outputs=["scaled_mantissa" + suffix]
-#     ))
-    
-#     # Get bit value at specified position
-#     nodes.append(helper.make_node(
-#         "Pow",
-#         inputs=["two" + suffix, "bit_pos_float" + suffix],
-#         outputs=["bit_pos_power" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Div",
-#         inputs=["scaled_mantissa" + suffix, "bit_pos_power" + suffix],
-#         outputs=["mantissa_shifted" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Floor",
-#         inputs=["mantissa_shifted" + suffix],
-#         outputs=["mantissa_shifted_floor" + suffix]
-#     ))
-    
-#     # Calculate modulo 2
-#     nodes.append(helper.make_node(
-#         "Div",
-#         inputs=["mantissa_shifted_floor" + suffix, "two" + suffix],
-#         outputs=["mantissa_div_half" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Floor",
-#         inputs=["mantissa_div_half" + suffix],
-#         outputs=["mantissa_half_floor" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Mul",
-#         inputs=["mantissa_half_floor" + suffix, "two" + suffix],
-#         outputs=["mantissa_double_half" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Sub",
-#         inputs=["mantissa_shifted_floor" + suffix, "mantissa_double_half" + suffix],
-#         outputs=["mantissa_bit" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Equal",
-#         inputs=["mantissa_bit" + suffix, "one" + suffix],
-#         outputs=["mantissa_bit_is_one" + suffix]
-#     ))
-    
-#     # Calculate delta to flip the bit
-#     # For positive numbers:
-#     #   - If bit is 0: add bit_weight
-#     #   - If bit is 1: subtract bit_weight
-#     # For negative numbers:
-#     #   - If bit is 0: subtract bit_weight (makes more negative)
-#     #   - If bit is 1: add bit_weight (makes less negative)
-    
-#     # First, calculate sign multiplier: 1 for positive, -1 for negative
-#     nodes.append(helper.make_node(
-#         "Where",
-#         inputs=["is_negative" + suffix, "neg_one" + suffix, "one" + suffix],
-#         outputs=["sign_multiplier" + suffix]
-#     ))
-    
-#     # For positive, bit 0->1: add weight
-#     # For negative, bit 0->1: subtract weight (multiply by -1)
-#     nodes.append(helper.make_node(
-#         "Mul",
-#         inputs=["mantissa_bit_weight" + suffix, "sign_multiplier" + suffix],
-#         outputs=["mantissa_delta_pos" + suffix]
-#     ))
-    
-#     # For bit 1->0, use the opposite
-#     nodes.append(helper.make_node(
-#         "Neg",
-#         inputs=["mantissa_delta_pos" + suffix],
-#         outputs=["mantissa_delta_neg" + suffix]
-#     ))
-    
-#     # Choose delta based on the current bit value
-#     nodes.append(helper.make_node(
-#         "Where",
-#         inputs=["mantissa_bit_is_one" + suffix, "mantissa_delta_neg" + suffix, "mantissa_delta_pos" + suffix],
-#         outputs=["mantissa_delta" + suffix]
-#     ))
-    
-#     # Apply delta to input
-#     nodes.append(helper.make_node(
-#         "Add",
-#         inputs=["input_fp32" + suffix, "mantissa_delta" + suffix],
-#         outputs=["mantissa_flipped_raw" + suffix]
-#     ))
-    
-#     # Re-quantize to FP16 precision
-#     nodes.append(helper.make_node(
-#         "Cast",
-#         inputs=["mantissa_flipped_raw" + suffix],
-#         outputs=["mantissa_flipped_fp16" + suffix],
-#         to=TensorProto.FLOAT16
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Cast",
-#         inputs=["mantissa_flipped_fp16" + suffix],
-#         outputs=["mantissa_flipped" + suffix],
-#         to=TensorProto.FLOAT
-#     ))
-    
-#     # --------------------------------
-#     # 5. SPECIAL HANDLING FOR ZERO
-#     # --------------------------------
-    
-#     # For bit 10 (lowest exponent bit), flipping gives smallest normal value
-#     nodes.append(helper.make_node(
-#         "Equal",
-#         inputs=["bit_pos" + suffix, "exp_start" + suffix],
-#         outputs=["is_lowest_exp_bit" + suffix]
-#     ))
-    
-#     # Special case for zero with exponent bit flipping
-#     nodes.append(helper.make_node(
-#         "And", 
-#         inputs=["is_zero" + suffix, "is_exp_bit" + suffix],
-#         outputs=["zero_exp_flip" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "And",
-#         inputs=["zero_exp_flip" + suffix, "is_lowest_exp_bit" + suffix],
-#         outputs=["zero_to_smallest" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["smallest_normal" + suffix],
-#         value=helper.make_tensor(
-#             name="smallest_normal_tensor" + suffix,
-#             data_type=TensorProto.FLOAT,
-#             dims=[],
-#             vals=[6.103515625e-5]  # Smallest normal FP16
-#         )
-#     ))
-    
-#     # For zero with mantissa bits, calculate proper denormal
-#     nodes.append(helper.make_node(
-#         "And", 
-#         inputs=["is_zero" + suffix, "is_mantissa_bit" + suffix],
-#         outputs=["zero_mantissa_flip" + suffix]
-#     ))
-    
-#     # Calculate 2^(-14 + bit_position - 10) = 2^(bit_position - 24)
-#     nodes.append(helper.make_node(
-#         "Constant",
-#         inputs=[],
-#         outputs=["neg_14" + suffix],
-#         value=helper.make_tensor(
-#             name="neg_14_tensor" + suffix,
-#             data_type=TensorProto.FLOAT,
-#             dims=[],
-#             vals=[-14.0]
-#         )
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Add",
-#         inputs=["neg_14" + suffix, "mantissa_bit_adj" + suffix],
-#         outputs=["zero_mantissa_power" + suffix]
-#     ))
-    
-#     nodes.append(helper.make_node(
-#         "Pow",
-#         inputs=["two" + suffix, "zero_mantissa_power" + suffix],
-#         outputs=["zero_mantissa_value" + suffix]
-#     ))
-    
-#     # --------------------------------
-#     # 6. COMBINE OUTPUTS
-#     # --------------------------------
-    
-#     # First choose between exponent and mantissa flipped values
-#     nodes.append(helper.make_node(
-#         "Where",
-#         inputs=["is_exp_bit" + suffix, "exp_flipped" + suffix, "mantissa_flipped" + suffix],
-#         outputs=["exp_or_mantissa" + suffix]
-#     ))
-    
-#     # Then choose sign-flipped if appropriate
-#     nodes.append(helper.make_node(
-#         "Where",
-#         inputs=["is_sign_bit" + suffix, "sign_flipped" + suffix, "exp_or_mantissa" + suffix],
-#         outputs=["normal_result" + suffix]
-#     ))
-    
-#     # Handle special case for zero to smallest normal
-#     nodes.append(helper.make_node(
-#         "Where",
-#         inputs=["zero_to_smallest" + suffix, "smallest_normal" + suffix, "normal_result" + suffix],
-#         outputs=["zero_exp_handled" + suffix]
-#     ))
-    
-#     # Handle special case for zero with mantissa bit
-#     nodes.append(helper.make_node(
-#         "Where",
-#         inputs=["zero_mantissa_flip" + suffix, "zero_mantissa_value" + suffix, "zero_exp_handled" + suffix],
-#         outputs=[output_name]
-#     ))
-    
-#     return nodes
-
-def create_fp16_input_bit_flip(input_name, output_name, bit_position):
-    nodes = []
-    suffix = "_rf"  # random flip suffix
-    
-    # -------------------------------
-    # 1. Random Index Generation
-    # -------------------------------
-    
-    # Get input shape (e.g., [batch, sequence, hidden])
-    nodes.append(helper.make_node(
-        'Shape',
-        inputs=[input_name],
         outputs=['runtime_shape' + suffix]
     ))
     
-    # Cast shape to float for multiplication
+    # 2. Cast runtime shape to FLOAT to scale random values.
     nodes.append(helper.make_node(
         'Cast',
         inputs=['runtime_shape' + suffix],
@@ -2326,51 +762,32 @@ def create_fp16_input_bit_flip(input_name, output_name, bit_position):
         to=TensorProto.FLOAT
     ))
     
-    # Generate random uniform values with the same length as the shape
-    nodes.append(helper.make_node(
-        'Shape',
-        inputs=['runtime_shape' + suffix],
-        outputs=['shape_rank' + suffix]
-    ))
-    
-    # Create dynamic shape for RandomUniform
-    nodes.append(helper.make_node(
-        'ConstantOfShape',
-        inputs=['shape_rank' + suffix],
-        outputs=['rand_shape' + suffix],
-        value=helper.make_tensor(
-            name='rand_shape_val' + suffix,
-            data_type=TensorProto.INT64,
-            dims=[1],
-            vals=[1]
-        )
-    ))
-    
-    # Generate random values between 0 and 1
+    # 3. Generate a random uniform tensor with shape equal to [rank] (assume input is 3D, so shape=[3]).
     nodes.append(helper.make_node(
         'RandomUniform',
-        inputs=['rand_shape' + suffix],
+        inputs=[],
         outputs=['random_vals' + suffix],
         dtype=TensorProto.FLOAT,
+        low=0.0,
         high=1.0,
-        low=0.0
+        shape=[3]
     ))
     
-    # Scale random values by the tensor dimensions
+    # 4. Multiply the random values by the runtime shape (element-wise).
     nodes.append(helper.make_node(
         'Mul',
         inputs=['random_vals' + suffix, 'runtime_shape_float' + suffix],
         outputs=['scaled_indices' + suffix]
     ))
     
-    # Floor to get integer indices
+    # 5. Floor the scaled indices.
     nodes.append(helper.make_node(
         'Floor',
         inputs=['scaled_indices' + suffix],
         outputs=['floored_indices' + suffix]
     ))
     
-    # Cast to INT64 for indexing
+    # 6. Cast floored indices to INT64.
     nodes.append(helper.make_node(
         'Cast',
         inputs=['floored_indices' + suffix],
@@ -2378,81 +795,391 @@ def create_fp16_input_bit_flip(input_name, output_name, bit_position):
         to=TensorProto.INT64
     ))
     
-    # Unsqueeze to create index for GatherND
+    # 7. Unsqueeze the indices to shape [1, 3] (for ScatterND, we need an index of shape [num_indices, rank]).
+    unsqueeze_axes = helper.make_tensor(
+        name="unsqueeze_axes_tensor" + suffix,
+        data_type=TensorProto.INT64,
+        dims=[1],
+        vals=[0]
+    )
+    nodes.append(helper.make_node(
+        'Constant',
+        inputs=[],
+        outputs=['unsqueeze_axes' + suffix],
+        value=unsqueeze_axes
+    ))
     nodes.append(helper.make_node(
         'Unsqueeze',
-        inputs=['indices_int64' + suffix],
-        outputs=['indices_unsqueezed' + suffix],
-        axes=[0]  # Add a new axis at position 0
+        inputs=['indices_int64' + suffix, 'unsqueeze_axes' + suffix],
+        outputs=['indices_unsqueezed' + suffix]
     ))
     
-    # -------------------------------
-    # 2. Extract value at random position & apply bit flip
-    # -------------------------------
-    
-    # Use GatherND to get the value at the random index
-    nodes.append(helper.make_node(
-        'GatherND',
-        inputs=[input_name, 'indices_unsqueezed' + suffix],
-        outputs=['selected_value' + suffix]
-    ))
-    
-    # Cast to float32 for bit flip operations
-    nodes.append(helper.make_node(
-        'Cast',
-        inputs=['selected_value' + suffix],
-        outputs=['selected_value_float' + suffix],
-        to=TensorProto.FLOAT
-    ))
-    
-    # Create an intermediate output name
-    flipped_value = 'flipped_value' + suffix
-    
-    # Generate the bit flip nodes for the selected value
-    bit_flip_nodes = create_fp16_bit_flip('selected_value_float' + suffix, flipped_value, bit_position)
-    nodes.extend(bit_flip_nodes)
-    
-    # -------------------------------
-    # 3. Calculate perturbation (difference between original and flipped value)
-    # -------------------------------
-    
-    # Calculate the perturbation (flipped - original)
-    nodes.append(helper.make_node(
-        'Sub',
-        inputs=[flipped_value, 'selected_value_float' + suffix],
-        outputs=['value_perturbation' + suffix]
-    ))
-    
-    # Cast perturbation to FP16
-    nodes.append(helper.make_node(
-        'Cast',
-        inputs=['value_perturbation' + suffix],
-        outputs=['value_perturbation_fp16' + suffix],
-        to=TensorProto.FLOAT16
-    ))
-    
-    # -------------------------------
-    # 4. Create perturbation tensor (zeros with perturbation at target position)
-    # -------------------------------
-    
-    # Create zero tensor with same shape as input
+    # 8. Create a zero tensor with the same shape as input (FP16) using ConstantOfShape.
     nodes.append(helper.make_node(
         'ConstantOfShape',
         inputs=['runtime_shape' + suffix],
-        outputs=['zeros' + suffix],
+        outputs=['zero_tensor' + suffix],
         value=helper.make_tensor(
-            name='zeros_val' + suffix,
+            name='zero_tensor_val' + suffix,
             data_type=TensorProto.FLOAT16,
             dims=[1],
-            vals=[0.0]
+            vals=[0]
         )
     ))
     
-    # Use ScatterND to insert the perturbation value at the random position
+    # 9. Create a constant one (FP16) to scatter.
     nodes.append(helper.make_node(
-        'ScatterND',
-        inputs=['zeros' + suffix, 'indices_unsqueezed' + suffix, 'value_perturbation_fp16' + suffix],
-        outputs=[output_name]  # This is the perturbation tensor only
+        'Constant',
+        inputs=[],
+        outputs=['one_scalar' + suffix],
+        value=helper.make_tensor(
+            name='one_tensor' + suffix,
+            data_type=TensorProto.FLOAT16,
+            dims=[1],
+            vals=[1]
+        )
     ))
     
+    # 10. Use ScatterND to create a one-hot mask: a tensor of same shape as input, with 1 at the random index.
+    nodes.append(helper.make_node(
+        'ScatterND',
+        inputs=['zero_tensor' + suffix, 'indices_unsqueezed' + suffix, 'one_scalar' + suffix],
+        outputs=['one_hot_mask' + suffix]
+    ))
+    
+    # --- Apply custom FP16 BitFlip to compute the flipped tensor ---
+    # 11. Create a constant for the bit position.
+    nodes.append(helper.make_node(
+        'Constant',
+        inputs=[],
+        outputs=['bit_pos_const' + suffix],
+        value=helper.make_tensor(
+            name='bit_pos_tensor' + suffix,
+            data_type=TensorProto.INT32,
+            dims=[1],
+            vals=[bit_position]
+        )
+    ))
+    
+    # 12. Call the custom FP16 BitFlip operator (domain "custom.bitflip").
+    nodes.append(helper.make_node(
+        'BitFlip',
+        inputs=[output_name, 'bit_pos_const' + suffix],
+        outputs=['flipped_tensor' + suffix],
+        domain='custom.bitflip'
+    ))
+    
+    # 13. Compute the difference: flipped_tensor - original.
+    nodes.append(helper.make_node(
+        'Sub',
+        inputs=['flipped_tensor' + suffix, output_name],
+        outputs=['difference' + suffix]
+    ))
+    
+    # 14. Multiply the difference by the one-hot mask to isolate the fault in one element.
+    nodes.append(helper.make_node(
+        'Mul',
+        inputs=['difference' + suffix, 'one_hot_mask' + suffix],
+        outputs=['perturbation' + suffix]
+    ))
+    
+    # 15. Add the perturbation back to the original tensor.
+    # This is equivalent to replacing one element with its flipped version.
+    nodes.append(helper.make_node(
+        'Add',
+        inputs=[output_name, 'perturbation' + suffix],
+        outputs=[faulty_output]
+    ))
+    
+    return nodes
+
+def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
+    nodes = []
+    suffix = "_fp16"
+
+    # --- Generate a random index (for a 2D tensor) ---
+    # 1. Get the shape of the input weight.
+    nodes.append(helper.make_node(
+        'Shape',
+        inputs=[input_name],
+        outputs=['runtime_shape' + suffix]
+    ))
+    
+    # 2. Cast the shape to FLOAT (to allow multiplication with random numbers).
+    nodes.append(helper.make_node(
+        'Cast',
+        inputs=['runtime_shape' + suffix],
+        outputs=['runtime_shape_float' + suffix],
+        to=TensorProto.FLOAT
+    ))
+    
+    # 3. Generate a random uniform tensor with shape [2] (assumes weight is 2D).
+    nodes.append(helper.make_node(
+        'RandomUniform',
+        inputs=[],
+        outputs=['random_vals' + suffix],
+        dtype=TensorProto.FLOAT,
+        low=0.0,
+        high=1.0,
+        shape=[2]
+    ))
+    
+    # 4. Multiply the random values by the runtime shape (element‐wise) to scale them.
+    nodes.append(helper.make_node(
+        'Mul',
+        inputs=['random_vals' + suffix, 'runtime_shape_float' + suffix],
+        outputs=['scaled_indices' + suffix]
+    ))
+    
+    # 5. Floor the scaled indices.
+    nodes.append(helper.make_node(
+        'Floor',
+        inputs=['scaled_indices' + suffix],
+        outputs=['floored_indices' + suffix]
+    ))
+    
+    # 6. Cast the floored indices to INT64.
+    nodes.append(helper.make_node(
+        'Cast',
+        inputs=['floored_indices' + suffix],
+        outputs=['indices_int64' + suffix],
+        to=TensorProto.INT64
+    ))
+    
+    # 7. Unsqueeze the indices so that they have shape [1,2] (required by ScatterND).
+    #    Create a constant for the unsqueeze axes.
+    unsqueeze_axes = helper.make_tensor(
+        name="unsqueeze_axes_tensor" + suffix,
+        data_type=TensorProto.INT64,
+        dims=[1],
+        vals=[0]
+    )
+    nodes.append(helper.make_node(
+        'Constant',
+        inputs=[],
+        outputs=['unsqueeze_axes' + suffix],
+        value=unsqueeze_axes
+    ))
+    nodes.append(helper.make_node(
+        'Unsqueeze',
+        inputs=['indices_int64' + suffix, 'unsqueeze_axes' + suffix],
+        outputs=['indices_unsqueezed' + suffix]
+    ))
+    
+    # 8. Create a zero tensor with the same shape as the input using ConstantOfShape.
+    nodes.append(helper.make_node(
+        'ConstantOfShape',
+        inputs=['runtime_shape' + suffix],
+        outputs=['zero_tensor' + suffix],
+        value=helper.make_tensor(
+            name='zero_value_tensor' + suffix,
+            data_type=TensorProto.FLOAT16,
+            dims=[1],
+            vals=[0]
+        )
+    ))
+    
+    # 9. Create a constant one (as FP16) to use for scattering.
+    nodes.append(helper.make_node(
+        'Constant',
+        inputs=[],
+        outputs=['one_scalar' + suffix],
+        value=helper.make_tensor(
+            name='one_tensor' + suffix,
+            data_type=TensorProto.FLOAT16,
+            dims=[1],
+            vals=[1]
+        )
+    ))
+    
+    # 10. ScatterND: Place the constant one at the random index in the zero tensor
+    #     to form a one-hot mask.
+    nodes.append(helper.make_node(
+        'ScatterND',
+        inputs=['zero_tensor' + suffix, 'indices_unsqueezed' + suffix, 'one_scalar' + suffix],
+        outputs=['one_hot_mask' + suffix]
+    ))
+    
+    # --- Apply BitFlip to generate a flipped weight, then compute the perturbation ---
+    # 11. Create a constant for the bit position.
+    nodes.append(helper.make_node(
+        'Constant',
+        inputs=[],
+        outputs=['bit_pos_const' + suffix],
+        value=helper.make_tensor(
+            name='bit_pos_tensor' + suffix,
+            data_type=TensorProto.INT32,
+            dims=[1],
+            vals=[bit_position]
+        )
+    ))
+    
+    # 12. Call the custom FP16 BitFlip op (from your shared library).
+    nodes.append(helper.make_node(
+        'BitFlip',
+        inputs=[input_name, 'bit_pos_const' + suffix],
+        outputs=['flipped_weight' + suffix],
+        domain='custom.bitflip'
+    ))
+    
+    # 13. Subtract the original weight from the flipped weight.
+    nodes.append(helper.make_node(
+        'Sub',
+        inputs=['flipped_weight' + suffix, input_name],
+        outputs=['difference' + suffix]
+    ))
+    
+    # 14. Multiply the difference with the one-hot mask so that only the selected index is perturbed.
+    nodes.append(helper.make_node(
+        'Mul',
+        inputs=['difference' + suffix, 'one_hot_mask' + suffix],
+        outputs=['perturbation' + suffix]
+    ))
+    
+    # 15. Use an Identity node to name the final output.
+    nodes.append(helper.make_node(
+        'Identity',
+        inputs=['perturbation' + suffix],
+        outputs=[output_name]
+    ))
+    
+    return nodes
+
+def create_fp16_fault_injection(input_name, output_name, bit_position):
+
+    nodes = []
+    suffix = "_fp16"
+
+    # --- Random Index Generation for 3D tensor ---
+    # 1. Get the runtime shape of the input.
+    nodes.append(helper.make_node(
+        'Shape',
+        inputs=[input_name],
+        outputs=['runtime_shape' + suffix]
+    ))
+    # 2. Cast the runtime shape to FLOAT.
+    nodes.append(helper.make_node(
+        'Cast',
+        inputs=['runtime_shape' + suffix],
+        outputs=['runtime_shape_float' + suffix],
+        to=TensorProto.FLOAT
+    ))
+    # 3. Generate a random uniform tensor of shape [3] with values in [0,1].
+    nodes.append(helper.make_node(
+        'RandomUniform',
+        inputs=[],
+        outputs=['random_vals' + suffix],
+        dtype=TensorProto.FLOAT,
+        low=0.0,
+        high=1.0,
+        shape=[3]
+    ))
+    # 4. Multiply the random values by the runtime shape (element-wise) to get scaled indices.
+    nodes.append(helper.make_node(
+        'Mul',
+        inputs=['random_vals' + suffix, 'runtime_shape_float' + suffix],
+        outputs=['scaled_indices' + suffix]
+    ))
+    # 5. Floor the scaled indices.
+    nodes.append(helper.make_node(
+        'Floor',
+        inputs=['scaled_indices' + suffix],
+        outputs=['floored_indices' + suffix]
+    ))
+    # 6. Cast the floored indices to INT64.
+    nodes.append(helper.make_node(
+        'Cast',
+        inputs=['floored_indices' + suffix],
+        outputs=['indices_int64' + suffix],
+        to=TensorProto.INT64
+    ))
+    # 7. Unsqueeze the indices to shape [1,3] for ScatterND.
+    unsqueeze_axes = helper.make_tensor(
+        name="unsqueeze_axes_tensor" + suffix,
+        data_type=TensorProto.INT64,
+        dims=[1],
+        vals=[0]
+    )
+    nodes.append(helper.make_node(
+        'Constant',
+        inputs=[],
+        outputs=['unsqueeze_axes' + suffix],
+        value=unsqueeze_axes
+    ))
+    nodes.append(helper.make_node(
+        'Unsqueeze',
+        inputs=['indices_int64' + suffix, 'unsqueeze_axes' + suffix],
+        outputs=['indices_unsqueezed' + suffix]
+    ))
+
+    # 8. Create a zero tensor with the same shape as the input.
+    nodes.append(helper.make_node(
+        'ConstantOfShape',
+        inputs=['runtime_shape' + suffix],
+        outputs=['zero_tensor' + suffix],
+        value=helper.make_tensor(
+            name='zero_tensor_val' + suffix,
+            data_type=TensorProto.FLOAT16,
+            dims=[1],
+            vals=[0]
+        )
+    ))
+    # 9. Create a constant one (as FP16) to scatter.
+    nodes.append(helper.make_node(
+        'Constant',
+        inputs=[],
+        outputs=['one_scalar' + suffix],
+        value=helper.make_tensor(
+            name='one_tensor' + suffix,
+            data_type=TensorProto.FLOAT16,
+            dims=[1],
+            vals=[1]
+        )
+    ))
+    # 10. ScatterND: Place the constant one into the zero tensor at the random index to form a one-hot mask.
+    nodes.append(helper.make_node(
+        'ScatterND',
+        inputs=['zero_tensor' + suffix, 'indices_unsqueezed' + suffix, 'one_scalar' + suffix],
+        outputs=['one_hot_mask' + suffix]
+    ))
+
+    # --- Fault Injection via BitFlip ---
+    # 11. Create a constant for the bit position.
+    nodes.append(helper.make_node(
+        'Constant',
+        inputs=[],
+        outputs=['bit_pos_const' + suffix],
+        value=helper.make_tensor(
+            name='bit_pos_tensor' + suffix,
+            data_type=TensorProto.INT32,
+            dims=[1],
+            vals=[bit_position]
+        )
+    ))
+    # 12. Apply the custom FP16 BitFlip operator to the entire input.
+    nodes.append(helper.make_node(
+        'BitFlip',
+        inputs=[input_name, 'bit_pos_const' + suffix],
+        outputs=['flipped_input' + suffix],
+        domain='custom.bitflip'
+    ))
+    # 13. Compute the difference: flipped_input - input.
+    nodes.append(helper.make_node(
+        'Sub',
+        inputs=['flipped_input' + suffix, input_name],
+        outputs=['difference' + suffix]
+    ))
+    # 14. Multiply the difference by the one-hot mask so that only the selected index is perturbed.
+    nodes.append(helper.make_node(
+        'Mul',
+        inputs=['difference' + suffix, 'one_hot_mask' + suffix],
+        outputs=['perturbation' + suffix]
+    ))
+    # 15. Use Identity to name the final output.
+    nodes.append(helper.make_node(
+        'Identity',
+        inputs=['perturbation' + suffix],
+        outputs=[output_name]
+    ))
+
     return nodes

@@ -1,56 +1,65 @@
 cmake_minimum_required(VERSION 3.13)
 project(onnx_bitflip_operator LANGUAGES CXX CUDA)
 
-# Find CUDA
-find_package(CUDA REQUIRED)
-include_directories(${CUDA_INCLUDE_DIRS})
-
-# Set C++ standard
+# Set C++ standard.
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Set CUDA flags
-set(CMAKE_CUDA_STANDARD 14)
-set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -gencode arch=compute_50,code=sm_50 -gencode arch=compute_60,code=sm_60 -gencode arch=compute_70,code=sm_70")
+# Set ONNX Runtime paths based on your pip installation.
+# You can verify the include directory by checking:
+#   python -c "import onnxruntime; print(onnxruntime.__file__)"
+# Then use the "capi" subfolder for the headers.
+set(ONNXRUNTIME_INCLUDE_DIR "/usr/local/lib/python3.12/dist-packages/onnxruntime/capi" CACHE PATH "ONNX Runtime include directory from pip")
+# Set ONNXRUNTIME_LIBRARY to the main shared library used by onnxruntime (adjust the file name if necessary).
+set(ONNXRUNTIME_LIBRARY "/usr/local/lib/python3.12/dist-packages/onnxruntime/capi/onnxruntime_pybind11_state.cpython-312-x86_64-linux-gnu.so" CACHE FILEPATH "ONNX Runtime shared library from pip")
 
-# Find ONNX Runtime
-set(ONNXRUNTIME_INCLUDE_DIR "/usr/local/include/onnxruntime" CACHE PATH "Path to ONNX Runtime include directory")
-set(ONNXRUNTIME_LIB_DIR "/usr/local/lib" CACHE PATH "Path to ONNX Runtime library directory")
+if(NOT ONNXRUNTIME_INCLUDE_DIR)
+  message(FATAL_ERROR "ONNXRUNTIME_INCLUDE_DIR must be set")
+endif()
+if(NOT ONNXRUNTIME_LIBRARY)
+  message(FATAL_ERROR "ONNXRUNTIME_LIBRARY must be set")
+endif()
 
-# Add include directories
-include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${ONNXRUNTIME_INCLUDE_DIR}
-)
-link_directories(${ONNXRUNTIME_LIB_DIR})
+message(STATUS "Using ONNX Runtime include dir: ${ONNXRUNTIME_INCLUDE_DIR}")
+message(STATUS "Using ONNX Runtime library: ${ONNXRUNTIME_LIBRARY}")
 
-# Add source files
-set(SOURCES
-    src/bit_flip_op.cc
-    src/bit_flip_cuda.cu
-)
+# Add include directories: add your project "include" folder and the ONNX Runtime includes.
+include_directories(${CMAKE_SOURCE_DIR}/include)
+include_directories(${ONNXRUNTIME_INCLUDE_DIR})
 
-# Create shared library
+if(USE_CUDA)
+  find_package(CUDA REQUIRED)
+  include_directories(${CUDA_INCLUDE_DIRS})
+  # Set CUDA architectures (adjust according to your GPU; for example, 75 for Turing)
+  set(CMAKE_CUDA_ARCHITECTURES 75)
+endif()
+
+# List source files.
+set(SOURCES src/bit_flip_op.cc src/register_custom_ops.cc)
+if(USE_CUDA)
+  list(APPEND SOURCES src/bit_flip_cuda.cu)
+endif()
+
+# Create shared library.
 add_library(onnx_bitflip SHARED ${SOURCES})
 
-# Link against ONNX Runtime
-target_link_libraries(onnx_bitflip onnxruntime ${CUDA_LIBRARIES})
+if(USE_CUDA)
+  target_compile_definitions(onnx_bitflip PRIVATE USE_CUDA)
+endif()
 
-# Set library properties
+target_compile_options(onnx_bitflip PRIVATE -Wall -Wextra -fpermissive -fPIC)
+
+if(USE_CUDA)
+  find_package(CUDA REQUIRED)
+  target_link_libraries(onnx_bitflip ${ONNXRUNTIME_LIBRARY} ${CUDA_LIBRARIES})
+else()
+  target_link_libraries(onnx_bitflip ${ONNXRUNTIME_LIBRARY})
+endif()
+
+# Embed an rpath so that at runtime the library can locate its dependencies.
+# $ORIGIN refers to the directory containing this shared library.
 set_target_properties(onnx_bitflip PROPERTIES
-    PREFIX ""
-    POSITION_INDEPENDENT_CODE ON
-)
-
-# Install
-install(TARGETS onnx_bitflip 
-    LIBRARY DESTINATION lib
-    RUNTIME DESTINATION bin
-)
-
-# Install headers
-install(DIRECTORY include/
-    DESTINATION include/onnx_bitflip
-    FILES_MATCHING PATTERN "*.h"
+  PREFIX ""
+  POSITION_INDEPENDENT_CODE ON
+  INSTALL_RPATH "$ORIGIN;/usr/local/lib/python3.12/dist-packages/onnxruntime/capi"
 )

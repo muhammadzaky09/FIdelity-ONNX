@@ -1,17 +1,39 @@
-from transformers import AutoTokenizer
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# This software may be used and distributed according to the terms of the GNU General Public License version 3.
+# Copyright (c) https://github.com/tpoisonooo/llama.onnx
+
+from sentencepiece import SentencePieceProcessor
+from typing import List
 from loguru import logger
+import os
+
 
 class Tokenizer:
-    def __init__(self, model_path: str = None):
-        logger.info("Loading HuggingFace AutoTokenizer for Llama-2-7b-hf")
-        self.tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", use_fast=True)
-        logger.info(f"Vocabulary size: {len(self.tokenizer.get_vocab())}")
-        logger.info(f"FINISH tokens: { self.tokenizer.eos_token_id}")
-    
-    def encode(self, s: str, ):
-        return self.tokenizer.encode(s, add_special_tokens=True)
-    
-    def decode(self, token_ids):
-        if hasattr(token_ids, 'tolist'):
-            token_ids = token_ids.tolist()
-        return self.tokenizer.decode(token_ids, skip_special_tokens=False)
+
+    def __init__(self, model_path: str):
+        # reload tokenizer
+        assert os.path.isfile(model_path), model_path
+        self.sp_model = SentencePieceProcessor(model_file=model_path)
+        logger.info(f"Reloaded SentencePiece model from {model_path}")
+
+        # BOS / EOS token IDs
+        self.n_words: int = self.sp_model.vocab_size()
+        self.bos_id: int = self.sp_model.bos_id()
+        self.eos_id: int = self.sp_model.eos_id()
+        self.pad_id: int = self.sp_model.pad_id()
+        logger.info(
+            f"#words: {self.n_words} - BOS ID: {self.bos_id} - EOS ID: {self.eos_id}"
+        )
+        assert self.sp_model.vocab_size() == self.sp_model.get_piece_size()
+
+    def encode(self, s: str, bos: bool, eos: bool) -> List[int]:
+        assert type(s) is str
+        t = self.sp_model.encode(s)
+        if bos:
+            t = [self.bos_id] + t
+        if eos:
+            t = t + [self.eos_id]
+        return t
+
+    def decode(self, t: List[int]) -> str:
+        return self.sp_model.decode(t)

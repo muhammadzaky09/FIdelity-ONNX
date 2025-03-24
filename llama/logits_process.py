@@ -1,6 +1,6 @@
 import numpy as np
 from loguru import logger
-
+from utils import npsoftmax
 # refers to https://github.com/huggingface/transformers/blob/main/src/transformers/generation/logits_process.py 
 def warp_topk(tensor: np.array, topk: int, fill_value = -float("Inf")):
     if topk is None or topk <= 0:
@@ -18,6 +18,34 @@ def warp_topk(tensor: np.array, topk: int, fill_value = -float("Inf")):
 
     return tensor
 
+def warp_topp(tensor: np.array, top_p: float, fill_value = -float("Inf")):
+    if top_p is None or top_p >= 1.0:
+        return tensor
+    assert len(tensor.shape) == 2
+    
+    for idx, pval in enumerate(tensor):
+        # Sort probabilities in descending order
+        sorted_indices = np.argsort(pval)[::-1]
+        sorted_logits = pval[sorted_indices]
+        
+        # Convert to probabilities
+        sorted_probs = npsoftmax(sorted_logits[None, :], axis=1)[0]
+        
+        # Compute cumulative probabilities
+        cumulative_probs = np.cumsum(sorted_probs)
+        
+        # Find cutoff index where cumulative probability exceeds p
+        cutoff_idx = np.searchsorted(cumulative_probs, top_p, side='right')
+        cutoff_idx = max(1, cutoff_idx)  # Always keep at least one token
+        
+        # Create mask for tokens to keep (those within the top-p nucleus)
+        mask = np.zeros_like(pval, dtype=bool)
+        mask[sorted_indices[:cutoff_idx]] = True
+        
+        # Set scores for tokens outside the nucleus to fill_value
+        tensor[idx, ~mask] = fill_value
+    
+    return tensor
 
 def warp_temperature(tensor: np.array, temperature: float):
     EPSILON = 1e-4

@@ -1,6 +1,13 @@
 import os
 import numpy as np
 import onnxruntime as ort
+import ctypes
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("BitFlipOp")
 
 class BitFlipOp:
     def __init__(self):
@@ -9,29 +16,45 @@ class BitFlipOp:
         lib_path = os.path.join(current_dir, 'onnx_bitflip.so')
         
         if not os.path.exists(lib_path):
-            # Try to find in site-packages
-            import site
-            for site_dir in site.getsitepackages():
-                candidate = os.path.join(site_dir, 'onnx_bitflip.so')
-                if os.path.exists(candidate):
-                    lib_path = candidate
-                    break
-        
-        if not os.path.exists(lib_path):
-            raise FileNotFoundError(f"Could not find onnx_bitflip.so library. Current dir: {current_dir}")
+            # Try to find in build directory
+            parent_dir = os.path.dirname(current_dir)
+            lib_path = os.path.join(parent_dir, 'build', 'onnx_bitflip.so')
             
-        # Register the custom op
-        self.sess_options = ort.SessionOptions()
-        self.sess_options.register_custom_ops_library(lib_path)
-        print(f"Registered custom ops library from {lib_path}")
+        if not os.path.exists(lib_path):
+            raise FileNotFoundError(f"Could not find onnx_bitflip.so library at {lib_path}")
+        
+        logger.info(f"Loading custom op library from: {lib_path}")
+        
+        # Check if the library exists and is valid
+        try:
+            lib = ctypes.CDLL(lib_path)
+            # Look for the RegisterCustomOps symbol
+            if hasattr(lib, 'RegisterCustomOps'):
+                logger.info("Found RegisterCustomOps symbol in library")
+            else:
+                logger.warning("RegisterCustomOps symbol not found in library")
+        except Exception as e:
+            logger.error(f"Error loading library: {e}")
+        
+        # Register the custom op with ONNXRuntime
+        try:
+            self.sess_options = ort.SessionOptions()
+            
+            
+            # logger.info("Registering custom op library")
+            # Register the library
+            self.sess_options.register_custom_ops_library(lib_path)
+            # logger.info("Successfully registered custom ops library")
+        except Exception as e:
+            logger.error(f"Error registering custom ops library: {e}")
+            raise
 
-    def create_model(self, input_shape, dtype=np.float32):
+    def create_model(self, input_shape):
         """
-        Create an ONNX model with the BitFlip operator
+        Create an ONNX model with the BitFlip operator for FP16
         
         Args:
             input_shape: Shape of the input tensor
-            dtype: Data type (np.float32 or np.float16)
         
         Returns:
             onnx_model: ONNX model bytes
@@ -39,13 +62,10 @@ class BitFlipOp:
         import onnx
         from onnx import helper, TensorProto
         
-        # Determine element type for ONNX
-        if dtype == np.float32:
-            elem_type = TensorProto.FLOAT
-        elif dtype == np.float16:
-            elem_type = TensorProto.FLOAT16
-        else:
-            raise ValueError(f"Unsupported dtype: {dtype}")
+        # logger.info(f"Creating ONNX model with input shape {input_shape}")
+        
+        # Use FP16
+        elem_type = TensorProto.FLOAT16
         
         # Create inputs
         input_tensor = helper.make_tensor_value_info(
@@ -65,7 +85,7 @@ class BitFlipOp:
             'BitFlip',         # Op type
             ['input', 'bit_position'],  # Inputs
             ['output'],        # Outputs
-            domain='contrib.bitflip'
+            domain='custom.bitflip'  # Domain
         )
         
         # Create graph
@@ -82,11 +102,11 @@ class BitFlipOp:
             producer_name='BitFlip_Producer',
             opset_imports=[
                 helper.make_opsetid('', 14),
-                helper.make_opsetid('contrib.bitflip', 1)
+                helper.make_opsetid('custom.bitflip', 1)
             ]
         )
         
-        # Return the serialized model
+        # logger.info("ONNX model created successfully")
         return model.SerializeToString()
     
     def run(self, input_data, bit_position, use_gpu=False):
@@ -94,29 +114,51 @@ class BitFlipOp:
         Run the BitFlip operator
         
         Args:
-            input_data: Input tensor (numpy array)
+            input_data: Input tensor (numpy array in FP16)
             bit_position: Bit position to flip (integer)
             use_gpu: Whether to use GPU
         
         Returns:
             output: Result tensor
         """
+        # Ensure input is FP16
+        if input_data.dtype != np.float16:
+            # logger.info(f"Converting input from {input_data.dtype} to float16")
+            input_data = input_data.astype(np.float16)
+        
+        # logger.info(f"Running BitFlip with bit position {bit_position}")
+        
         # Create model
-        model_bytes = self.create_model(input_data.shape, input_data.dtype)
+        model_bytes = self.create_model(input_data.shape)
         
         # Set providers
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if use_gpu else ['CPUExecutionProvider']
+        providers = ['CUDAExecutionProvider'] 
+        logger.info(f"Using providers: {providers}")
         
-        # Create session
-        session = ort.InferenceSession(model_bytes, self.sess_options, providers=providers)
-        
-        # Convert bit position to numpy array
-        bit_pos_np = np.array([bit_position], dtype=np.int32)
-        
-        # Run inference
-        outputs = session.run(None, {
-            'input': input_data,
-            'bit_position': bit_pos_np
-        })
-        
-        return outputs[0]
+        try:
+            # Create session with detailed logging
+            # logger.info("Creating inference session")
+            session = ort.InferenceSession(
+                model_bytes, 
+                self.sess_options, 
+                providers=providers
+            )
+            
+            # Convert bit position to numpy array
+            bit_pos_np = np.array([bit_position], dtype=np.int32)
+            
+            # Prepare inputs
+            feeds = {
+                'input': input_data,
+                'bit_position': bit_pos_np
+            }
+            
+            # Run inference
+            # logger.info("Running inference")
+            outputs = session.run(None, feeds)
+            # logger.info("Inference completed successfully")
+            
+            return outputs[0]
+        except Exception as e:
+            logger.error(f"Error during inference: {e}")
+            raise

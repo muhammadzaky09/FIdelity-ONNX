@@ -9,10 +9,12 @@ import psutil
 import math
 
 class OrtWrapper:
-    def __init__(self, onnxfile: str):
+    def __init__(self, onnxfile: str, custom_op_lib_path: str = 'onnx_bitflip_cuda.so'):
         assert os.path.exists(onnxfile)
         self.onnxfile = onnxfile
-        self.sess = ort.InferenceSession(onnxfile, providers=['CUDAExecutionProvider'])
+        sess_options = ort.SessionOptions()
+        sess_options.register_custom_ops_library(custom_op_lib_path)
+        self.sess = ort.InferenceSession(onnxfile, sess_options, providers=['CUDAExecutionProvider'])
         self.inputs = self.sess.get_inputs()
         outputs = self.sess.get_outputs()
         self.output_names = [output.name for output in outputs]
