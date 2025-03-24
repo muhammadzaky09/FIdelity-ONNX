@@ -25,20 +25,8 @@ def find_nodes_consuming(graph, tensor_name: str) -> List:
     return consumers
 
 def modify_onnx_graph_input_fp16(config: Dict[str, Any], fault_model: str, bit_position: int = 3, precision: str = 'float16'):
-    """
-    Inject faults into the input tensor of a MatMul node.
-    
-    Args:
-        config: Dictionary with 'decoder_path', 'input_tensor', 'weight_tensor', 'output_tensor'
-        fault_model: Type of fault model to use ('INPUT', 'INPUT16', etc.)
-        bit_position: Bit position to flip (for bitflip models)
-        precision: Precision to use ('float16' or 'int8')
-        
-    Returns:
-        Path to the modified ONNX model
-    """
     model_path = config["decoder_path"]
-    output_path = model_path.replace(".onnx", f"_input_injected_bit{bit_position}.onnx")
+    output_path = config.get("output_path", model_path.replace(".onnx", "_injected.onnx"))
     
     # Load model
     model = onnx.load(model_path)
@@ -157,7 +145,7 @@ def modify_onnx_graph_weight_fp16(config: Dict[str, Any], fault_model: str, bit_
         Path to the modified ONNX model
     """
     model_path = config["decoder_path"]
-    output_path = model_path.replace(".onnx", f"_weight_injected_bit{bit_position}.onnx")
+    output_path = config.get("output_path", model_path.replace(".onnx", "_injected.onnx"))
     
     # Load model
     model = onnx.load(model_path)
@@ -286,7 +274,7 @@ def modify_onnx_graph_random_fp16(config: Dict[str, Any], fault_model: str, bit_
         Path to the modified ONNX model
     """
     model_path = config["decoder_path"]
-    output_path = model_path.replace(".onnx", f"_random_injected_bit{bit_position}.onnx")
+    output_path = config.get("output_path", model_path.replace(".onnx", "_injected.onnx"))
     
     # Load model
     model = onnx.load(model_path)
