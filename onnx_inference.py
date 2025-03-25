@@ -481,7 +481,7 @@ class Llama:
         return full_response, faulty_token
 
     # Add MMLU-specific methods
-    def process_mmlu_example(self, test_example, dev_examples, num_shots=5):
+    def process_mmlu_example(self, test_example, dev_examples, num_shots=3):
         """Run MMLU inference and extract results"""
         # Create few-shot prompt
         prompt = create_few_shot_prompt(dev_examples, test_example, num_shots)
@@ -564,8 +564,8 @@ if __name__ == "__main__":
     llama_config = {
         'temperature': 0.01,
         'topp': 0.9,
-        'max': 1000,
-        'poolsize': 39,
+        'max': 650,
+        'poolsize': 48,
         'fp16': True
     }
 
