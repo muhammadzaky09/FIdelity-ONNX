@@ -101,9 +101,9 @@ def save_matmul_info(matmul_nodes, output_dir="matmul_info"):
 
 if __name__ == "__main__":
     # Directory containing your ONNX files
-    onnx_dir = "decoders/fp16"
+    onnx_dir = "alpaca"
     # Output directory for JSON files
-    output_dir = "input_llm_fp16"
+    output_dir = "injection_llm"
     
     # Use glob to find all .onnx files in the specified directory
     onnx_files = glob.glob(os.path.join(onnx_dir, "*.onnx"))
