@@ -610,7 +610,7 @@ if __name__ == "__main__":
         # For each fault model
         for fault_model in ['INPUT','WEIGHT','INPUT16','WEIGHT16','RANDOM','RANDOM_BITFLIP']: 
             # For each bit position (0-7)
-            for bit_position in range(8):
+            for bit_position in range(16):
                 # Select a subject in rotation
                 curr_subject = subjects[subject_index % len(subjects)]
                 subjects_used.add(curr_subject)
