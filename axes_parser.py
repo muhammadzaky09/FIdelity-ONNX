@@ -66,7 +66,7 @@ def move_initializers_to_constant_for_matmul(model):
                 if inp in init_dict:
                     # If not already replaced, create a Constant node.
                     if inp not in replaced_inits:
-                        new_const_name = inp + "_const"
+                        new_const_name = inp 
                         replaced_inits[inp] = new_const_name
                         const_node = helper.make_node(
                             "Constant",
