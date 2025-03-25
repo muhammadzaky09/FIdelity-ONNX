@@ -889,16 +889,15 @@ def create_random_bitflip_injection(output_name: str, bit_position: int):
 def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
     nodes = []
     suffix = "_fp16"
-
-    # --- Generate a random index (for a 2D tensor) ---
-    # 1. Get the shape of the input weight.
+    
+    # 1. Get the shape of the input weight
     nodes.append(helper.make_node(
         'Shape',
         inputs=[input_name],
         outputs=['runtime_shape' + suffix]
     ))
     
-    # 2. Cast the shape to FLOAT (to allow multiplication with random numbers).
+    # 2. Cast the shape to FLOAT
     nodes.append(helper.make_node(
         'Cast',
         inputs=['runtime_shape' + suffix],
@@ -906,32 +905,31 @@ def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
         to=TensorProto.FLOAT
     ))
     
-    # 3. Generate a random uniform tensor with shape [2] (assumes weight is 2D).
+    # 3. Generate random values with the same shape as runtime_shape
     nodes.append(helper.make_node(
-        'RandomUniform',
-        inputs=[],
+        'RandomUniformLike',
+        inputs=['runtime_shape' + suffix],
         outputs=['random_vals' + suffix],
         dtype=TensorProto.FLOAT,
-        low=0.0,
         high=1.0,
-        shape=[2]
+        low=0.0
     ))
     
-    # 4. Multiply the random values by the runtime shape (element‐wise) to scale them.
+    # 4. Multiply random values by shape dimensions to get indices
     nodes.append(helper.make_node(
         'Mul',
         inputs=['random_vals' + suffix, 'runtime_shape_float' + suffix],
         outputs=['scaled_indices' + suffix]
     ))
     
-    # 5. Floor the scaled indices.
+    # 5. Floor the scaled indices
     nodes.append(helper.make_node(
         'Floor',
         inputs=['scaled_indices' + suffix],
         outputs=['floored_indices' + suffix]
     ))
     
-    # 6. Cast the floored indices to INT64.
+    # 6. Cast to INT64
     nodes.append(helper.make_node(
         'Cast',
         inputs=['floored_indices' + suffix],
@@ -939,8 +937,7 @@ def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
         to=TensorProto.INT64
     ))
     
-    # 7. Unsqueeze the indices so that they have shape [1,2] (required by ScatterND).
-    #    Create a constant for the unsqueeze axes.
+    # 7. Unsqueeze the indices for ScatterND
     unsqueeze_axes = helper.make_tensor(
         name="unsqueeze_axes_tensor" + suffix,
         data_type=TensorProto.INT64,
@@ -959,7 +956,7 @@ def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
         outputs=['indices_unsqueezed' + suffix]
     ))
     
-    # 8. Create a zero tensor with the same shape as the input using ConstantOfShape.
+    # 8. Create a zero tensor with the same shape as the input
     nodes.append(helper.make_node(
         'ConstantOfShape',
         inputs=['runtime_shape' + suffix],
@@ -972,7 +969,7 @@ def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
         )
     ))
     
-    # 9. Create a constant one (as FP16) to use for scattering.
+    # 9. Create a constant one (FP16) for scattering
     nodes.append(helper.make_node(
         'Constant',
         inputs=[],
@@ -985,16 +982,14 @@ def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
         )
     ))
     
-    # 10. ScatterND: Place the constant one at the random index in the zero tensor
-    #     to form a one-hot mask.
+    # 10. ScatterND: Create one-hot mask
     nodes.append(helper.make_node(
         'ScatterND',
         inputs=['zero_tensor' + suffix, 'indices_unsqueezed' + suffix, 'one_scalar' + suffix],
         outputs=['one_hot_mask' + suffix]
     ))
     
-    # --- Apply BitFlip to generate a flipped weight, then compute the perturbation ---
-    # 11. Create a constant for the bit position.
+    # 11. Create bit position constant
     nodes.append(helper.make_node(
         'Constant',
         inputs=[],
@@ -1007,7 +1002,7 @@ def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
         )
     ))
     
-    # 12. Call the custom FP16 BitFlip op (from your shared library).
+    # 12. Apply BitFlip to the weight 
     nodes.append(helper.make_node(
         'BitFlip',
         inputs=[input_name, 'bit_pos_const' + suffix],
@@ -1015,21 +1010,21 @@ def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
         domain='custom.bitflip'
     ))
     
-    # 13. Subtract the original weight from the flipped weight.
+    # 13. Calculate difference between flipped and original
     nodes.append(helper.make_node(
         'Sub',
         inputs=['flipped_weight' + suffix, input_name],
         outputs=['difference' + suffix]
     ))
     
-    # 14. Multiply the difference with the one-hot mask so that only the selected index is perturbed.
+    # 14. Apply mask to isolate perturbation to one element
     nodes.append(helper.make_node(
         'Mul',
         inputs=['difference' + suffix, 'one_hot_mask' + suffix],
         outputs=['perturbation' + suffix]
     ))
     
-    # 15. Use an Identity node to name the final output.
+    # 15. Return the perturbation
     nodes.append(helper.make_node(
         'Identity',
         inputs=['perturbation' + suffix],
@@ -1039,54 +1034,66 @@ def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
     return nodes
 
 def create_fp16_fault_injection(input_name, output_name, bit_position):
-
     nodes = []
     suffix = "_fp16"
 
-    # --- Random Index Generation for 3D tensor ---
-    # 1. Get the runtime shape of the input.
+    # 1. Get the runtime shape of the input
     nodes.append(helper.make_node(
         'Shape',
         inputs=[input_name],
         outputs=['runtime_shape' + suffix]
     ))
-    # 2. Cast the runtime shape to FLOAT.
+    
+    # 2. Get the rank (dimension count) of the input tensor dynamically
+    nodes.append(helper.make_node(
+        'Size',
+        inputs=['runtime_shape' + suffix],
+        outputs=['rank' + suffix]
+    ))
+    
+    
+    
+    # 4. Cast the runtime shape to FLOAT
     nodes.append(helper.make_node(
         'Cast',
         inputs=['runtime_shape' + suffix],
         outputs=['runtime_shape_float' + suffix],
         to=TensorProto.FLOAT
     ))
-    # 3. Generate a random uniform tensor of shape [3] with values in [0,1].
+    
+    # 5. Generate random values with the same shape as runtime_shape
     nodes.append(helper.make_node(
-        'RandomUniform',
-        inputs=[],
+        'RandomUniformLike',
+        inputs=['runtime_shape' + suffix],
         outputs=['random_vals' + suffix],
         dtype=TensorProto.FLOAT,
-        low=0.0,
         high=1.0,
-        shape=[3]
+        low=0.0
     ))
-    # 4. Multiply the random values by the runtime shape (element-wise) to get scaled indices.
+    
+    # 6. Multiply random values by shape dimensions to get indices
     nodes.append(helper.make_node(
         'Mul',
         inputs=['random_vals' + suffix, 'runtime_shape_float' + suffix],
         outputs=['scaled_indices' + suffix]
     ))
-    # 5. Floor the scaled indices.
+    
+    # 7. Floor the scaled indices
     nodes.append(helper.make_node(
         'Floor',
         inputs=['scaled_indices' + suffix],
         outputs=['floored_indices' + suffix]
     ))
-    # 6. Cast the floored indices to INT64.
+    
+    # 8. Cast the floored indices to INT64
     nodes.append(helper.make_node(
         'Cast',
         inputs=['floored_indices' + suffix],
         outputs=['indices_int64' + suffix],
         to=TensorProto.INT64
     ))
-    # 7. Unsqueeze the indices to shape [1,3] for ScatterND.
+    
+    # 9. Unsqueeze the indices for ScatterND
     unsqueeze_axes = helper.make_tensor(
         name="unsqueeze_axes_tensor" + suffix,
         data_type=TensorProto.INT64,
@@ -1105,39 +1112,40 @@ def create_fp16_fault_injection(input_name, output_name, bit_position):
         outputs=['indices_unsqueezed' + suffix]
     ))
 
-    # 8. Create a zero tensor with the same shape as the input.
+    # 10. Create a zero tensor with the same shape as the input
     nodes.append(helper.make_node(
         'ConstantOfShape',
         inputs=['runtime_shape' + suffix],
         outputs=['zero_tensor' + suffix],
         value=helper.make_tensor(
             name='zero_tensor_val' + suffix,
-            data_type=TensorProto.FLOAT16,
+            data_type=TensorProto.FLOAT16,  # FP16 as required
             dims=[1],
             vals=[0]
         )
     ))
-    # 9. Create a constant one (as FP16) to scatter.
+    
+    # 11. Create a constant one (as FP16) to scatter
     nodes.append(helper.make_node(
         'Constant',
         inputs=[],
         outputs=['one_scalar' + suffix],
         value=helper.make_tensor(
             name='one_tensor' + suffix,
-            data_type=TensorProto.FLOAT16,
+            data_type=TensorProto.FLOAT16,  # FP16 as required
             dims=[1],
             vals=[1]
         )
     ))
-    # 10. ScatterND: Place the constant one into the zero tensor at the random index to form a one-hot mask.
+    
+    # 12. ScatterND: Place the constant one into the zero tensor
     nodes.append(helper.make_node(
         'ScatterND',
         inputs=['zero_tensor' + suffix, 'indices_unsqueezed' + suffix, 'one_scalar' + suffix],
         outputs=['one_hot_mask' + suffix]
     ))
 
-    # --- Fault Injection via BitFlip ---
-    # 11. Create a constant for the bit position.
+    # 13. Create a constant for the bit position
     nodes.append(helper.make_node(
         'Constant',
         inputs=[],
@@ -1149,26 +1157,30 @@ def create_fp16_fault_injection(input_name, output_name, bit_position):
             vals=[bit_position]
         )
     ))
-    # 12. Apply the custom FP16 BitFlip operator to the entire input.
+    
+    # 14. Apply BitFlip to the entire input (FP16 to FP16)
     nodes.append(helper.make_node(
         'BitFlip',
         inputs=[input_name, 'bit_pos_const' + suffix],
         outputs=['flipped_input' + suffix],
         domain='custom.bitflip'
     ))
-    # 13. Compute the difference: flipped_input - input.
+    
+    # 15. Compute the difference
     nodes.append(helper.make_node(
         'Sub',
         inputs=['flipped_input' + suffix, input_name],
         outputs=['difference' + suffix]
     ))
-    # 14. Multiply the difference by the one-hot mask so that only the selected index is perturbed.
+    
+    # 16. Apply the mask
     nodes.append(helper.make_node(
         'Mul',
         inputs=['difference' + suffix, 'one_hot_mask' + suffix],
         outputs=['perturbation' + suffix]
     ))
-    # 15. Use Identity to name the final output.
+    
+    # 17. Output the perturbation
     nodes.append(helper.make_node(
         'Identity',
         inputs=['perturbation' + suffix],

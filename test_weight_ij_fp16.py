@@ -6,8 +6,19 @@ from inject_ops import create_fp16_fault_injection_weight
 
 def test_weight_injection():
     # Create a simple FP16 weight tensor (2D for simplicity).
-    weight_value = np.array([[1.0, 2.0],
-                             [3.0, 4.0]], dtype=np.float16)
+    weight_value = np.array(
+    [  # Batch dimension (1)
+        [  # Dimension 2 (2)
+            [  # Dimension 3 (2)
+                [1.0, 2.0],  # Dimension 4 (2)
+                [3.0, 4.0]
+            ],
+            [  # Dimension 3 (2)
+                [5.0, 6.0],  # Dimension 4 (2)
+                [7.0, 8.0]
+            ]
+        ]
+    ], dtype=np.float16)
     
     # Create an initializer from the weight.
     weight_initializer = numpy_helper.from_array(weight_value, name="weight_fp16")
@@ -62,7 +73,7 @@ def test_weight_injection():
     custom_op_lib_path = "llama/onnx_bitflip.so"  # <-- Update with your actual path.
     sess_options = ort.SessionOptions()
     sess_options.register_custom_ops_library(custom_op_lib_path)
-    sess = ort.InferenceSession("test_weight_injection.onnx", sess_options, providers=['CPUExecutionProvider'])
+    sess = ort.InferenceSession("test_weight_injection.onnx", sess_options, providers=['CUDAExecutionProvider'])
     
     # Run inference. No external inputs are needed.
     outputs = sess.run(None, {})
