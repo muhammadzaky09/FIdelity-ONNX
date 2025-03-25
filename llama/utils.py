@@ -32,16 +32,29 @@ def npmultinominal2D(x):
 
     return ret
 
-def seeded_npmultinomial2D(x, seed=42):
-    assert len(x.shape) == 2
-
+def seeded_npmultinomial2D(x, seed=None):
     rng = np.random.RandomState(seed)
-    
+    assert len(x.shape) == 2
     ret = np.zeros((x.shape[0], 1), dtype=x.dtype)
     
     for row, pval in enumerate(x):
-        ret[row] = rng.multinomial(1, pval).argmax()
-    
+        try:
+            # Attempt the normal multinomial sampling
+            ret[row] = rng.multinomial(1, pval).argmax()
+        except ValueError:
+            # Minimal modification: only correct what is necessary.
+            # Replace NaNs with 0, and clip negatives and values >1.
+            pval_fixed = np.nan_to_num(pval, nan=0.0)
+            pval_fixed = np.clip(pval_fixed, 0, 1)
+            
+            # Normalize: if sum is zero, fallback to uniform distribution.
+            total = pval_fixed.sum()
+            if total == 0:
+                pval_fixed = np.ones_like(pval_fixed) / len(pval_fixed)
+            else:
+                pval_fixed = pval_fixed / total
+                
+            ret[row] = rng.multinomial(1, pval_fixed).argmax()
     return ret
 
 def npgreedy2D(x):
