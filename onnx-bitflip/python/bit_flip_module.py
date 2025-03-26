@@ -13,12 +13,12 @@ class BitFlipOp:
     def __init__(self):
         # Find the path to the shared library
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        lib_path = os.path.join(current_dir, 'onnx_bitflip.so')
+        lib_path = os.path.join(current_dir, 'onnx_perturb.so')
         
         if not os.path.exists(lib_path):
             # Try to find in build directory
             parent_dir = os.path.dirname(current_dir)
-            lib_path = os.path.join(parent_dir, 'build', 'onnx_bitflip.so')
+            lib_path = os.path.join(parent_dir, 'build', 'onnx_perturb.so')
             
         if not os.path.exists(lib_path):
             raise FileNotFoundError(f"Could not find onnx_bitflip.so library at {lib_path}")
@@ -82,7 +82,7 @@ class BitFlipOp:
         
         # Create node
         node = helper.make_node(
-            'BitFlip',         # Op type
+            'Perturb',         # Op type
             ['input', 'bit_position'],  # Inputs
             ['output'],        # Outputs
             domain='custom.bitflip'  # Domain

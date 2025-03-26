@@ -2,5 +2,5 @@
 #include <cstdio>
 
 namespace onnx_bitflip {
-// You can leave this file empty if all logic is in the header.
+// This file can remain empty if all logic is in the header.
 }

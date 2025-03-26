@@ -6,3 +6,4 @@ onnx-bitflip/include/
 onnx-bitflip/src/
 onnxruntime-dev/
 *.onnx
+csvs/

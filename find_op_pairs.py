@@ -347,20 +347,20 @@ def expose_matmul_output(decoder_path, matmul_pattern, output_path=None):
 
 
             
-# if __name__ == "__main__":
-#     config = {
-#     "node_id": "/self_attn/MatMul",
-#     "input_tensor": "/self_attn/Add_1_output_0",
-#     "weight_tensor": "/self_attn/Transpose_3_output_0",
-#     "output_tensor": "/self_attn/MatMul_output_0",
-#     "decoder_path": "decoders/fp16/decoder-merge-20-patched.onnx"
-# }
-#     fault_model = "WEIGHT16"  # or "WEIGHT16"
-#     bit_position = 3
-#     # modify_onnx_graph_input(config, fault_model, bit_position)
-# #     # print('doing injection')
-#     modify_onnx_graph_weight(config, fault_model, bit_position)
-    # modify_onnx_graph_random(config, fault_model, bit_position)
+if __name__ == "__main__":
+    config = {
+    "node_id": "/self_attn/MatMul",
+    "input_tensor": "/self_attn/Add_1_output_0",
+    "weight_tensor": "/self_attn/Transpose_3_output_0",
+    "output_tensor": "/self_attn/MatMul_output_0",
+    "decoder_path": "decoders/fp16/decoder-merge-20-patched.onnx"
+}
+    fault_model = "RANDOM_BITFLIP"  # or "WEIGHT16"
+    bit_position = 3
+    # modify_onnx_graph_input(config, fault_model, bit_position)
+#     # print('doing injection')
+    # modify_onnx_graph_weight(config, fault_model, bit_position)
+    modify_onnx_graph_random(config, fault_model, bit_position)
     
     
 #     # # RUNNING ONNXRUNTIME

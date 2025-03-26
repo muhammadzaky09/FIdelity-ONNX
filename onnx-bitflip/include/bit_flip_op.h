@@ -3,12 +3,14 @@
 #include "onnxruntime_cxx_api.h"
 #include <vector>
 #include <cstdint>
+#include <cstdlib>  // for rand()
 #ifdef USE_CUDA
   #include <cuda_runtime.h>
   #include <cuda_fp16.h>  // Provides __half.
   #include "bit_flip_cuda.h"  // Declaration is in namespace onnxruntime::contrib.
 #endif
 
+// Define OrtMemTypeGPUInput if not defined.
 #ifndef OrtMemTypeGPUInput
 #define OrtMemTypeGPUInput 2
 #endif
@@ -42,56 +44,61 @@ struct BitFlipKernel {
     OrtValue* output = nullptr;
     api_.KernelContext_GetOutput(context, 0, dims.data(), dim_count, &output);
 
-    // Retrieve bit position from host memory (scalar tensors are usually on host).
+    // Retrieve bit position from host memory.
     void* bit_pos_data_ptr = nullptr;
     api_.GetTensorMutableData(const_cast<OrtValue*>(bit_pos_tensor), &bit_pos_data_ptr);
     int bit_position = *static_cast<int*>(bit_pos_data_ptr);
 
-    // Ensure the tensor type is FP16.
+    // Ensure input is FP16.
     if (element_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
       fprintf(stderr, "BitFlip op expects FP16 tensor\n");
       return;
     }
 
+    // Select a random index in the flattened tensor.
+    int random_index = static_cast<int>(rand() % element_count);
+
 #ifdef USE_CUDA
-    // Get device pointers.
+    // GPU branch.
     void* device_input = nullptr;
     api_.GetTensorMutableData(const_cast<OrtValue*>(input), &device_input);
     void* device_output = nullptr;
     api_.GetTensorMutableData(output, &device_output);
-
-    // Query the CUDA compute stream.
     cudaStream_t stream = nullptr;
     OrtStatus* stream_status = api_.KernelContext_GetGPUComputeStream(context, reinterpret_cast<void**>(&stream));
     if (stream_status != nullptr || stream == nullptr) {
       fprintf(stderr, "Failed to obtain CUDA compute stream\n");
     }
-
-    // Launch the CUDA kernel via the launcher in onnxruntime::contrib.
     cudaError_t err = onnxruntime::contrib::LaunchBitFlipKernelFP16(
-        device_input, device_output, bit_position, element_count, stream);
+        device_input, device_output, bit_position, random_index, element_count, stream);
     if (err != cudaSuccess) {
       fprintf(stderr, "CUDA kernel failed with error: %d\n", err);
     }
 #else
-    // CPU implementation.
+    // CPU branch.
     void* host_input = nullptr;
     api_.GetTensorMutableData(const_cast<OrtValue*>(input), &host_input);
     void* host_output = nullptr;
     api_.GetTensorMutableData(output, &host_output);
-    const uint16_t* in_fp16 = static_cast<const uint16_t*>(host_input);
-    uint16_t* out_fp16 = static_cast<uint16_t*>(host_output);
+    const unsigned short* in = static_cast<const unsigned short*>(host_input);
+    unsigned short* out = static_cast<unsigned short*>(host_output);
     for (size_t i = 0; i < element_count; i++) {
-      uint16_t val = in_fp16[i];
-      val ^= (1u << bit_position);
-      out_fp16[i] = val;
+      out[i] = 0;
     }
+    unsigned short orig_bits = in[random_index];
+    unsigned short flipped_bits = orig_bits ^ (1u << bit_position);
+    __half h_orig = *reinterpret_cast<const __half*>(&orig_bits);
+    __half h_flipped = *reinterpret_cast<const __half*>(&flipped_bits);
+    float f_orig = __half2float(h_orig);
+    float f_flipped = __half2float(h_flipped);
+    float delta = f_flipped - f_orig;
+    __half h_delta = __float2half_rn(delta);
+    out[random_index] = *reinterpret_cast<unsigned short*>(&h_delta);
 #endif
 
     api_.ReleaseTensorTypeAndShapeInfo(tensor_info);
   }
 
-  // ComputeV2 is a thin wrapper.
   OrtStatus* ComputeV2(OrtKernelContext* context) {
     Compute(context);
     return nullptr;
@@ -102,7 +109,7 @@ private:
 };
 
 struct BitFlipOp : Ort::CustomOpBase<BitFlipOp, BitFlipKernel> {
-  #ifdef USE_CUDA
+#ifdef USE_CUDA
   const char* GetExecutionProviderType() const { return "CUDAExecutionProvider"; }
   size_t GetInputTypeCount() const { return 2; }
   ONNXTensorElementDataType GetInputType(size_t index) const {
@@ -112,14 +119,11 @@ struct BitFlipOp : Ort::CustomOpBase<BitFlipOp, BitFlipKernel> {
   ONNXTensorElementDataType GetOutputType(size_t) const {
     return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
   }
-  // IMPORTANT: Override GetInputMemoryType for both inputs.
+  // Force input 0 on GPU and input 1 on CPU.
   OrtMemType GetInputMemoryType(size_t index) const {
-    // Force input 0 (the FP16 tensor) to be GPU memory,
-    // and input 1 (the scalar) to be CPU memory.
     return (index == 0) ? OrtMemTypeGPUInput : OrtMemTypeCPUInput;
   }
 #else
-  // CPU branch remains unchanged.
   const char* GetExecutionProviderType() const { return "CPUExecutionProvider"; }
   size_t GetInputTypeCount() const { return 2; }
   ONNXTensorElementDataType GetInputType(size_t index) const {
@@ -131,9 +135,8 @@ struct BitFlipOp : Ort::CustomOpBase<BitFlipOp, BitFlipKernel> {
   }
 #endif
 
-
-  // Provide a default parameter so that GetName() can be called without an argument.
-  const char* GetName(const OrtKernelInfo* info = nullptr) const { return "BitFlip"; }
+  // Provide a default parameter so GetName() can be called with zero arguments.
+  const char* GetName(const OrtKernelInfo* info = nullptr) const { return "Perturb"; }
 
   void* CreateKernel(const OrtApi& api, const OrtKernelInfo* info) const {
     return new BitFlipKernel(api, info);

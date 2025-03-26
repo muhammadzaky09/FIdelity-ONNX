@@ -297,7 +297,7 @@ def run_model(model):
     return x, y
 
 if __name__ == "__main__":
-    size=2
+    size=16
     # For example, with a block length of 4 in each column.
     model = build_matmul_with_faulty_weight(input_shape=(1, 10, 16), weight_shape=(16, 16),
                                             input_dtype=np.float16, block_length=size)

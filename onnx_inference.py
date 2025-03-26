@@ -481,7 +481,7 @@ class Llama:
         return full_response, faulty_token
 
     # Add MMLU-specific methods
-    def process_mmlu_example(self, test_example, dev_examples, num_shots=3):
+    def process_mmlu_example(self, test_example, dev_examples, num_shots=1):
         """Run MMLU inference and extract results"""
         # Create few-shot prompt
         prompt = create_few_shot_prompt(dev_examples, test_example, num_shots)
@@ -517,7 +517,7 @@ class Llama:
             'first_token': first_token,
         }
     
-    def process_mmlu_example_faulty(self, test_example, dev_examples, prompt, num_shots=5):
+    def process_mmlu_example_faulty(self, test_example, dev_examples, prompt, num_shots=1):
         """Run faulty MMLU inference and extract results"""
         # Get faulty output
         faulty_output, faulty_token = self.sample_faulty(prompt)
@@ -556,6 +556,7 @@ if __name__ == "__main__":
 
     # Load dataset
     dev_examples, subject_to_examples, subjects = load_mmlu_dataset()
+    subjects = [s for s in subjects if s != "college_medicine" and s != "high_school_european_history"]
     if not dev_examples or not subject_to_examples or not subjects:
         logger.error("Failed to load MMLU dataset. Exiting.")
         exit(1)
@@ -564,7 +565,7 @@ if __name__ == "__main__":
     llama_config = {
         'temperature': 0.01,
         'topp': 0.9,
-        'max': 650,
+        'max': 300,
         'poolsize': 44,
         'fp16': True
     }
@@ -574,7 +575,7 @@ if __name__ == "__main__":
 
     # Create CSV file for results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_filename = f'mmlu_fault_injection_results.csv'
+    csv_filename = f'mmlu_fault_injection_results1.csv'
     file_exists = os.path.isfile(csv_filename)
     
     with open(csv_filename, 'a' if file_exists else 'w', newline='') as csvfile:
@@ -597,6 +598,8 @@ if __name__ == "__main__":
     
     # Start experiment loop
     for layer_file in os.listdir("injection_llm"):
+        #if layer_file in ["decoder-merge-15_131.json","decoder-merge-15__self_attn_MatMul.json","decoder-merge-15__self_attn_o_proj_MatMul.json"]:
+            #continue
         config_path = os.path.join("injection_llm", layer_file)
         # Skip directories
         if os.path.isdir(config_path):
@@ -608,7 +611,7 @@ if __name__ == "__main__":
         logger.info(f"{'='*40}")
         
         # For each fault model
-        for fault_model in ['INPUT','WEIGHT','INPUT16','WEIGHT16','RANDOM','RANDOM_BITFLIP']: 
+        for fault_model in ['INPUT','WEIGHT']: 
             # For each bit position (0-7)
             for bit_position in range(16):
                 # Select a subject in rotation
