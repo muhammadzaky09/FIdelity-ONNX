@@ -1149,7 +1149,7 @@ def create_fp16_fault_injection(input_name, output_name, bit_position):
 
     # 2. Create the perturb node that does everything internally.
     perturb_node = helper.make_node(
-        'perturb',  # This is your custom operator's name (GetName() returns "perturb")
+        'Perturb',  # This is your custom operator's name (GetName() returns "perturb")
         inputs=[input_name, 'bit_pos_const' + suffix],
         outputs=[output_name],
         domain='custom.perturb'
