@@ -1181,7 +1181,7 @@ def create_fp16_fault_injection_weight(input_name, output_name, bit_position):
         'Perturb',  # This is your custom operator's name (GetName() returns "perturb")
         inputs=[input_name, 'bit_pos_const' + suffix],
         outputs=[output_name],
-        domain='custom.bitflip'
+        domain='custom.perturb'
     )
     nodes.append(perturb_node)
 
