@@ -980,7 +980,7 @@ if __name__ == "__main__":
 
     # Configure Llama model with low temperature for multiple choice
     llama_config = {
-        'temperature': 0,
+        'temperature': 0.001,
         'topp': 0.1,
         'max': 300,
         'poolsize': 44,

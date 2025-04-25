@@ -2,3 +2,7 @@ numpy
 onnx==1.17.0
 onnxruntime-gpu==1.20.1
 transformers
+sentencepiece
+loguru
+datasets
+onnxruntime_extensions
