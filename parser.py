@@ -92,7 +92,7 @@ def parse_transformer_pairs(model_path: str):
                 "model_name": model_path
             }
             decoder_name = os.path.basename(model_path).replace('.onnx', '')
-            json_filename = f'input_llmint8/{decoder_name}_{pattern_name}.json'
+            json_filename = f'injection_llm/{decoder_name}_{pattern_name}.json'
             with open(json_filename, 'w') as f:
                 json.dump(info, f, indent=4)
             print(f"Saved JSON for pattern '{pattern_name}' as {json_filename}")
@@ -104,7 +104,7 @@ def parse_transformer_pairs(model_path: str):
 
 if __name__ == "__main__":
     # Directory containing your ONNX files.
-    onnx_dir = "decoders"
+    onnx_dir = "alpaca"
     # Use glob to find all .onnx files in the specified directory.
     onnx_files = glob.glob(os.path.join(onnx_dir, "*.onnx"))
     print(f"Found {len(onnx_files)} ONNX files in directory '{onnx_dir}'")
