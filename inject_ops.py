@@ -120,24 +120,24 @@ def create_quantized_fault_injection(input_name, output_name, bit_position, fp32
         outputs=['flipped_int' + suffix]
     ))
     
-    # # Calculate perturbation
-    # nodes.append(helper.make_node(
-    #     'Cast',
-    #     inputs=['flipped_int' + suffix],
-    #     outputs=['flipped_int32' + suffix],
-    #     to=TensorProto.INT32
-    # ))
+    # Calculate perturbation
+    nodes.append(helper.make_node(
+        'Cast',
+        inputs=['flipped_int' + suffix],
+        outputs=['flipped_int32' + suffix],
+        to=TensorProto.INT32
+    ))
     
-    # nodes.append(helper.make_node(
-    #     'Cast',
-    #     inputs=['int_val' + suffix],
-    #     outputs=['int_val32' + suffix],
-    #     to=TensorProto.INT32
-    # ))
+    nodes.append(helper.make_node(
+        'Cast',
+        inputs=['int_val' + suffix],
+        outputs=['int_val32' + suffix],
+        to=TensorProto.INT32
+    ))
     
     nodes.append(helper.make_node(
         'Sub',
-        inputs=['flipped_int' + suffix, 'int_val' + suffix],
+        inputs=['flipped_int32' + suffix, 'int_val32' + suffix],
         outputs=['perturbation_int32' + suffix]
     ))
     
