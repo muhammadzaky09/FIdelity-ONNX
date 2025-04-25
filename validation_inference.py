@@ -1,7 +1,12 @@
-import os
-import onnxruntime as ort
-import json
-import re
+import onnx
+from collections import deque, defaultdict
+from onnx import helper, shape_inference, numpy_helper, TensorProto
+from inject_ops import create_quantized_fault_injection,  create_random_bitflip_injection, create_random_fault_injection, create_input16_mask, create_weight16_mask, create_fp16_fault_injection, create_random_bitflip_fp32
+from typing import List
+from itertools import chain
+import numpy as np
+from inject_utils.utils import delta_init
+from axes_parser import patch_reduce_ops, move_initializers_to_constant_for_matmul
 from loguru import logger
 from llama.decoder import Decoder
 from llama.memory_pool import MemoryPoolSimple
@@ -10,13 +15,413 @@ from llama.logits_process import warp_temperature, warp_topp
 from llama.tokenizer import Tokenizer
 import argparse
 from datasets import load_dataset
-import csv
-from find_op_pairs import modify_onnx_graph_input, modify_onnx_graph_random, modify_onnx_graph_weight
-import numpy as np
+import re
+import os
 import random
 from datetime import datetime
 import gc
+import csv
+import json
 
+def analyze_path(model, start_pattern, target_config):
+    
+    consumers = defaultdict(list)
+    for node in model.graph.node:
+        for inp in node.input:
+            consumers[inp].append(node)
+    allowed_op_type = target_config.split("/")[-1]
+    source_nodes = [n for n in model.graph.node if start_pattern in n.output[0]]
+    
+    for src_node in source_nodes:
+        visited = set()
+        queue = deque([(src_node.output[0], [src_node])])
+        while queue:
+            current_tensor, path = queue.popleft()
+            if current_tensor in visited:
+                continue
+            visited.add(current_tensor)
+            for consumer in consumers.get(current_tensor, []):
+                new_path = path + [consumer]
+                if consumer.op_type == allowed_op_type and target_config in consumer.name:
+                    external_inputs = []
+                    for node in new_path:
+                        if node.op_type == 'Mul':
+                            external_inputs.extend(
+                                inp for inp in node.input if inp not in {n.output[0] for n in new_path}
+                            )
+                    return (src_node, consumer, new_path, external_inputs)
+                for out in consumer.output:
+                    queue.append((out, new_path))
+    return None
+
+
+def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
+    model_path = config["model_name"]
+    output_path = config.get("output_path", model_path.replace(".onnx", "_injected.onnx"))
+
+    model = onnx.load(model_path)
+    model = patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax"))
+    path_info = analyze_path(model, config["input_tensor"], config["target_layer"])
+    print("Path info:", path_info)
+    if path_info is None:
+        raise ValueError("Could not find a path matching the given patterns.")
+    src_node, target_node, full_path, external_inputs = path_info
+
+    clone_suffix = "_fault_injected"
+    original_target_output = target_node.output[0]
+
+    tensor_map = {}
+    cloned_nodes = []
+  
+    tensor_map[src_node.output[0]] = f"{src_node.output[0]}{clone_suffix}"
+    for node in full_path[1:]:
+        new_inputs = [tensor_map.get(inp, inp) for inp in node.input]
+        new_outputs = [f"{out}{clone_suffix}" for out in node.output]
+        cloned_node = helper.make_node( node.op_type,
+                                       new_inputs,new_outputs,
+                                       name=f"{node.name}{clone_suffix}",
+                                       **{attr.name: onnx.helper.get_attribute_value(attr) for attr in node.attribute}
+                                       )
+        cloned_nodes.append(cloned_node)
+        for orig_out, new_out in zip(node.output, new_outputs):
+            tensor_map[orig_out] = new_out
+    if llama_config['fp16']:
+        if llama_config['precision'] == 'int8':
+            injection_nodes = create_quantized_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                fp32=False,
+                is_signed=True
+            )
+        elif llama_config['precision'] == 'int4':
+            injection_nodes = create_quantized_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                fp32=False,
+                is_signed=False,
+            )    
+        elif llama_config['precision'] == 'float16':
+            injection_nodes = create_fp16_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                fp32=False,
+            )
+            
+    else:
+        if llama_config['precision'] == 'int8':
+            injection_nodes = create_quantized_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                fp32=True,
+                is_signed=True
+            )
+        elif llama_config['precision'] == 'int4':
+            injection_nodes = create_quantized_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                fp32=True,
+                is_signed=False,
+            )    
+        elif llama_config['precision'] == 'float16':
+            injection_nodes = create_fp16_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                fp32=True,
+            )
+
+    original_nodes = list(model.graph.node)
+    insert_pos = next(i for i, n in enumerate(original_nodes) if n.name == src_node.name) + 1
+    new_nodes = (
+        original_nodes[:insert_pos] +
+        injection_nodes +
+        cloned_nodes +
+        original_nodes[insert_pos:]
+    )
+    
+    cloned_target_output = tensor_map[original_target_output]
+    
+    if "16" in fault_model:
+        mask_nodes = create_input16_mask(
+            matmul_output=cloned_target_output, 
+            masked_output=f"{cloned_target_output}_masked",
+            block_length=16
+        )
+        new_nodes.extend(mask_nodes)
+        cloned_target_output = f"{cloned_target_output}_masked"
+    target_output_node = helper.make_node(
+        'Identity',
+        inputs=[cloned_target_output],
+        outputs=['target_layer_output'],
+        name='target_layer_output_identity'
+    )
+    new_nodes.append(target_output_node)
+    add_node = helper.make_node(
+        'Add',
+        [original_target_output, cloned_target_output],
+        [f"{original_target_output}_final"],
+        f"{original_target_output}_Add"
+    )
+    new_nodes.append(add_node)
+
+    for node in new_nodes:
+        if node != add_node and original_target_output in node.input:
+            node.input[:] = [
+                f"{original_target_output}_final" if inp == original_target_output else inp
+                for inp in node.input
+            ]
+
+    model.graph.ClearField('node')
+    model.graph.node.extend(new_nodes)
+    
+    model.graph.output.extend([
+        helper.make_tensor_value_info(
+            'target_layer_output',
+            TensorProto.FLOAT16 if llama_config['fp16'] else TensorProto.FLOAT,
+            None  # Shape will be inferred
+        )
+    ])
+
+    # Clone any external initializers if needed
+    for inp in external_inputs:
+        if inp in [i.name for i in model.graph.initializer]:
+            orig_init = next(i for i in model.graph.initializer if i.name == inp)
+            cloned_init = numpy_helper.from_array(numpy_helper.to_array(orig_init), name=f"{inp}{clone_suffix}")
+            model.graph.initializer.append(cloned_init)
+    
+    model = shape_inference.infer_shapes(model)
+    model.opset_import[0].version = 18
+    if llama_config['precision'] == 'float16':
+        existing_opsets = {op.domain: op.version for op in model.opset_import}
+        if 'custom.perturb' not in existing_opsets:
+            model.opset_import.append(helper.make_opsetid('custom.perturb', 1))
+    onnx.save(model, output_path)
+    print(f"Modified model saved to {output_path}")
+    return output_path
+
+def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
+    model_path = config["model_name"]
+    output_path = config.get("output_path", model_path.replace(".onnx", "_injected.onnx"))
+    model = onnx.load(model_path)
+    model = patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax"))
+    model = move_initializers_to_constant_for_matmul(model)
+    print("Output path:", output_path)
+    path_info = analyze_path(model, config["weight_tensor"], config["target_layer"])
+    if path_info is None:
+        raise ValueError(f"Could not find a weight path from '{config['weight_tensor']}' to target '{config['target_layer']}'.")
+    src_node, target_node, full_path, external_inputs = path_info
+
+    clone_suffix = "_fault_injected"
+    original_target_output = target_node.output[0]
+
+    # Clone the chain of nodes from the weight source to the target.
+    tensor_map = {}
+    cloned_nodes = []
+    tensor_map[src_node.output[0]] = f"{src_node.output[0]}{clone_suffix}"
+    for node in full_path[1:]:
+        new_inputs = [tensor_map.get(inp, inp) for inp in node.input]
+        new_outputs = [f"{out}{clone_suffix}" for out in node.output]
+        cloned_node = helper.make_node(node.op_type,new_inputs, new_outputs, name=f"{node.name}{clone_suffix}",**{attr.name: onnx.helper.get_attribute_value(attr) for attr in node.attribute})
+        cloned_nodes.append(cloned_node)
+        for orig_out, new_out in zip(node.output, new_outputs):
+            tensor_map[orig_out] = new_out
+    if llama_config['fp16']:
+        if llama_config['precision'] == 'int8':
+            injection_nodes = create_quantized_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                is_signed=True
+            )
+        elif llama_config['precision'] == 'int4':
+            injection_nodes = create_quantized_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                is_signed=False
+            )
+        elif llama_config['precision'] == 'float16':
+            injection_nodes = create_fp16_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position
+            )
+    else:
+        if llama_config['precision'] == 'int8':
+            injection_nodes = create_quantized_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                fp32=True,
+                is_signed=True
+            )
+        elif llama_config['precision'] == 'int4':
+            injection_nodes = create_quantized_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                fp32=True,
+                is_signed=False
+            )
+        elif llama_config['precision'] == 'float16':
+            injection_nodes = create_fp16_fault_injection(
+                input_name=src_node.output[0],
+                output_name=tensor_map[src_node.output[0]],
+                bit_position=bit_position,
+                fp32=True
+            )
+    
+
+    original_nodes = list(model.graph.node)
+    insert_pos = next(i for i, n in enumerate(original_nodes) if n.name == src_node.name) + 1
+    new_nodes = (
+        original_nodes[:insert_pos] +
+        injection_nodes +
+        cloned_nodes +
+        original_nodes[insert_pos:]
+    )
+    
+    cloned_target_output = tensor_map[original_target_output]
+    
+    if "16" in fault_model:
+        mask_nodes = create_weight16_mask(
+            matmul_output=cloned_target_output,
+            masked_output=f"{cloned_target_output}_masked",
+            block_length=np.random.randint(1, 16)
+        )
+        new_nodes.extend(mask_nodes)
+        cloned_target_output = f"{cloned_target_output}_masked"
+    target_output_node = helper.make_node(
+        'Identity',
+        inputs=[cloned_target_output],
+        outputs=['target_layer_output'],
+        name='target_layer_output_identity'
+    )
+    new_nodes.append(target_output_node)
+    add_node = helper.make_node(
+        "Add",
+        inputs=[original_target_output, cloned_target_output],
+        outputs=[f"{original_target_output}_final"],
+        name=f"{target_node.name}_Add"
+    )
+    new_nodes.append(add_node)
+    
+    for node in new_nodes:
+        if node != add_node and original_target_output in node.input:
+            node.input[:] = [
+                f"{original_target_output}_final" if inp == original_target_output else inp
+                for inp in node.input
+            ]
+    
+    model.graph.ClearField("node")
+    model.graph.node.extend(new_nodes)
+    model.graph.output.extend([
+        helper.make_tensor_value_info(
+            'target_layer_output',
+            TensorProto.FLOAT16 if llama_config['fp16'] else TensorProto.FLOAT,
+            None  # Shape will be inferred
+        )
+    ])
+    
+    for inp in external_inputs:
+        if inp in [i.name for i in model.graph.initializer]:
+            orig_init = next(i for i in model.graph.initializer if i.name == inp)
+            cloned_init = numpy_helper.from_array(numpy_helper.to_array(orig_init), name=f"{inp}{clone_suffix}")
+            model.graph.initializer.append(cloned_init)
+    
+    model = shape_inference.infer_shapes(model)
+    model.opset_import[0].version = 18
+    if llama_config['precision'] == 'float16':
+        existing_opsets = {op.domain: op.version for op in model.opset_import}
+        if 'custom.perturb' not in existing_opsets:
+            model.opset_import.append(helper.make_opsetid('custom.perturb', 1))
+    onnx.save(model, output_path)
+    print(f"Modified WEIGHT injection model saved to {output_path}")
+    return output_path
+
+
+def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=None):
+    model_path = config["model_name"]
+    output_path = config.get("output_path", model_path.replace(".onnx", "_random.onnx"))
+    target_pattern = config["target_layer"]
+
+    model = onnx.load(model_path)
+    model = patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax"))
+
+    target_node = None
+    for node in model.graph.node:
+        if node.op_type in {'MatMul', 'Linear', 'FullyConnected'} and target_pattern in node.name:
+            target_node = node
+            break
+    if not target_node:
+        raise ValueError(f"Target node with pattern {target_pattern} not found")
+
+    target_output = target_node.output[0]
+    consumers = defaultdict(list)
+    for node in model.graph.node:
+        for inp in node.input:
+            consumers[inp].append(node)
+    # (downstream_nodes not used further)
+
+    if "BITFLIP" in fault_model:
+        if llama_config['fp16']:
+            injection_nodes = create_random_bitflip_injection(
+                output_name=target_output,
+                bit_position=bit_position
+            )
+        else:
+            injection_nodes = create_random_bitflip_fp32(
+                output_name=target_output,
+                bit_position=bit_position,
+            )
+    else:
+        if llama_config['fp16']:
+            value = delta_init(is_float32=False)
+        else:
+            value = delta_init(is_float32=True)
+        injection_nodes = create_random_fault_injection(
+            output_name=target_output,
+            random_value=value
+        )
+    
+    new_nodes = []
+    faulty_output = f"{target_output}_faulty"
+
+    for node in model.graph.node:
+        if node == target_node:
+            new_nodes.append(node)  
+            new_nodes.extend(injection_nodes)  
+        else:
+            if target_output in node.input:
+                new_inputs = [
+                    faulty_output if inp == target_output else inp 
+                    for inp in node.input
+                ]
+                new_node = helper.make_node(
+                    node.op_type,
+                    new_inputs,
+                    node.output,
+                    node.name
+                )
+                new_nodes.append(new_node)
+            else:
+                new_nodes.append(node)
+    model.graph.ClearField('node')
+    model.graph.node.extend(new_nodes)
+
+    model.opset_import[0].version = 18
+    if 'BITFLIP' in fault_model:
+        existing_opsets = {op.domain: op.version for op in model.opset_import}
+        if 'ai.onnx.contrib' not in existing_opsets:
+            model.opset_import.append(helper.make_opsetid('ai.onnx.contrib', 1))
+    onnx.save(model, output_path)
+    print(f"Modified random fault injection model saved to {output_path}")
+    return output_path
 
 def load_mmlu_dataset():
     try:
@@ -267,6 +672,8 @@ class Llama:
         attention_mask = np.ones((1, seqlen + pastlen), dtype=np.float32)
         attention_mask = self._prepare_decoder_attention_mask(attention_mask, (1, seqlen), hidden, pastlen)
 
+        target_layer_output = None
+
         for idx in range(self.DECODER_COUNT):
             past_key = self.pastkeys[idx]
             past_value = self.pastvalues[idx]
@@ -295,6 +702,8 @@ class Llama:
             # If this is the target decoder layer, call the faulty module.
             if idx == self.fault_config['target_decoder_idx']:
                 outputs = self._faulty_decode(inputs, idx)
+                if 'target_layer_output' in outputs:
+                    target_layer_output = outputs['target_layer_output']
             else:
                 outputs = self.decoder.decode(inputs, idx)
 
@@ -303,7 +712,7 @@ class Llama:
             self.pastvalues[idx] = outputs['past_value']
 
         hidden = self.decoder.norm_head(hidden)
-        return hidden
+        return hidden, target_layer_output
 
     def _faulty_decode(self, inputs: dict, idx: int):
         from llama.memory_pool import OrtWrapper
@@ -349,9 +758,12 @@ class Llama:
         generated_tokens = []  
         token_count = 0
         next_token = input_ids
+        golden_logits = None
         
         while True:
             logits = self.decode(next_token)
+            if token_count == self.fault_config.get('target_token_idx', 0):
+                golden_logits = logits[:, -1, :].copy()
             next_token_scores = logits[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
@@ -383,7 +795,7 @@ class Llama:
         first_token = generated_tokens[0] if generated_tokens else None
 
             
-        return full_response, first_token
+        return full_response, first_token, golden_logits
     
     def sample_faulty(self, prompt: str = 'bonjour'):
         """
@@ -417,15 +829,21 @@ class Llama:
         token_count = 0
         generated_tokens = []
         next_token = input_ids
+        target_nonzeros = None
+        faulty_logits = None
         
         while True:
             # At the target token generation, use decode_faulty
             if token_count == self.fault_config['target_token_idx']:
                 logger.debug(f"Injecting fault at token position {token_count}")
-                logits = self.decode_faulty(next_token)
+                logits, layer_output = self.decode_faulty(next_token)
+                faulty_logits = logits[:, -1, :].copy()
+                if layer_output is not None:
+                    # Get non-zero indices
+                    target_nonzeros = np.nonzero(layer_output)
             else:
                 logits = self.decode(next_token)
-                
+                    
             next_token_scores = logits[:, -1, :]
             next_token_scores = self.apply_warp(next_token_scores)
             probs = npsoftmax(next_token_scores.astype(np.float64), axis=1)
@@ -454,8 +872,8 @@ class Llama:
         faulty_token = None
         if self.fault_config['target_token_idx'] < len(generated_tokens):
             faulty_token = generated_tokens[self.fault_config['target_token_idx']]
-            
-        return full_response, faulty_token
+                
+        return full_response, faulty_token, target_nonzeros, faulty_logits
 
     # Add MMLU-specific methods
     def process_mmlu_example(self, test_example, dev_examples, num_shots=1):
@@ -464,7 +882,7 @@ class Llama:
         prompt = create_few_shot_prompt(dev_examples, test_example, num_shots)
         
         # Get golden output
-        golden_output, first_token = self.sample_golden(prompt)
+        golden_output, first_token, golden_logits = self.sample_golden(prompt)
         
         # Extract answer
         predicted_letter = extract_answer(golden_output, prompt)
@@ -492,12 +910,13 @@ class Llama:
             'correct': correct_letter,
             'is_correct': (predicted_letter == correct_letter) if predicted_letter else False,
             'first_token': first_token,
+            'golden_logits': golden_logits
         }
     
     def process_mmlu_example_faulty(self, test_example, dev_examples, prompt, num_shots=1):
         """Run faulty MMLU inference and extract results"""
         # Get faulty output
-        faulty_output, faulty_token = self.sample_faulty(prompt)
+        faulty_output, faulty_token, target_nonzeros, faulty_logits = self.sample_faulty(prompt)
         
         # Extract answer
         predicted_letter = extract_answer(faulty_output, prompt)
@@ -513,11 +932,13 @@ class Llama:
         
         return {
             'output': faulty_output,
-            'model_output': model_output,  # Just the answer part without prompt
+            'model_output': model_output,
             'predicted': predicted_letter,
             'correct': correct_letter,
             'is_correct': (predicted_letter == correct_letter) if predicted_letter else False,
-            'faulty_token': faulty_token
+            'faulty_token': faulty_token,
+            'target_nonzeros': target_nonzeros,
+            'faulty_logits': faulty_logits
         }
 
 def extract_decoder_idx(path):
@@ -527,6 +948,13 @@ def extract_decoder_idx(path):
     if 'decoder-merge-' in filename:
         decoder_idx_str = filename.split('decoder-merge-')[1].split('_')[0]
         return int(decoder_idx_str)
+
+def are_logits_equal(golden_logits, faulty_logits):
+    if golden_logits is None or faulty_logits is None:
+        return False
+    if golden_logits.shape != faulty_logits.shape:
+        return False
+    return np.array_equal(golden_logits, faulty_logits)
 
 if __name__ == "__main__":
     logger.info("Starting MMLU fault injection experiments...")
@@ -565,7 +993,7 @@ if __name__ == "__main__":
             'Target_Decoder_Idx', 'Target_Token_Idx', 'Experiment',
             'Golden_Answer', 'Faulty_Answer', 'Correct_Answer',
             'Golden_Correct', 'Faulty_Correct', 'Answer_Changed',
-            'Correctness_Changed', 'Golden_Raw_Output', 'Faulty_Raw_Output', 'Golden_Token', 'Faulty_Token'
+            'Correctness_Changed', 'Golden_Raw_Output', 'Faulty_Raw_Output', 'Golden_Token', 'Faulty_Token','Target_Nonzeros','Logits_Equal'
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         if not file_exists:
@@ -642,10 +1070,29 @@ if __name__ == "__main__":
                         test_example, dev_examples, golden_result['prompt']
                     )
                     
+                    # In the main experiment loop, after running golden and faulty inference:
+                    if golden_result.get('golden_logits') is not None:
+                        logits_dir = 'logits_data'
+                        os.makedirs(logits_dir, exist_ok=True)
+                        
+                        # Save golden logits
+                        golden_logits_path = os.path.join(
+                            logits_dir, 
+                            f"golden_logits_layer{layer_file}_model{fault_model}_bit{bit_position}_exp{experiment}.npy"
+                        )
+                        np.save(golden_logits_path, golden_result['golden_logits'])
+                        
+                        # Save faulty logits
+                        if faulty_result.get('faulty_logits') is not None:
+                            faulty_logits_path = os.path.join(
+                                logits_dir, 
+                                f"faulty_logits_layer{layer_file}_model{fault_model}_bit{bit_position}_exp{experiment}.npy"
+                            )
+                            np.save(faulty_logits_path, faulty_result['faulty_logits'])
                     # Analyze changes
                     answer_changed = golden_result['predicted'] != faulty_result['predicted']
                     correctness_changed = golden_result['is_correct'] != faulty_result['is_correct']
-                    
+                    logits_equal = are_logits_equal(golden_result.get('golden_logits'), faulty_result.get('faulty_logits'))
                     # Display comparison
                     print("\nCOMPARISON RESULTS:")
                     print(f"{'='*40}")
@@ -682,7 +1129,9 @@ if __name__ == "__main__":
                             'Golden_Raw_Output': golden_result['model_output'],
                             'Faulty_Raw_Output': faulty_result['model_output'],
                             'Golden_Token': golden_result['first_token'],
-                            'Faulty_Token': faulty_result['faulty_token']
+                            'Faulty_Token': faulty_result['faulty_token'],
+                            'Target_Nonzeros': str(faulty_result['target_nonzeros']) if faulty_result.get('target_nonzeros') is not None else "None",
+                            'Logits_Equal': logits_equal
                         })
                 
                 # Clean up the faulty decoder

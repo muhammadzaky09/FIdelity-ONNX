@@ -5,28 +5,38 @@ import re
 from loguru import logger
 from llama.decoder import Decoder
 from llama.memory_pool import MemoryPoolSimple
-from llama.utils import npsoftmax, seeded_npmultinomial2D
+from llama.utils import npsoftmax, npmultinominal2D, npgreedy2D, seeded_npmultinomial2D
 from llama.logits_process import warp_temperature, warp_topp
 from llama.tokenizer import Tokenizer
 import argparse
 from datasets import load_dataset
 import csv
-from find_op_pairs import modify_onnx_graph_input, modify_onnx_graph_random, modify_onnx_graph_weight
+from find_op_pairs import modify_onnx_graph_input, modify_onnx_graph_weight, modify_onnx_graph_random
 import numpy as np
 import random
 from datetime import datetime
 import gc
+import torch
 
 
 def load_mmlu_dataset():
+    """Load MMLU dataset with all examples for each subject"""
     try:
+        # Load dev set (for few-shot examples)
         dev_dataset = load_dataset("cais/mmlu", "all", split="dev")
+            
+        # Load test set (for evaluation)
         test_dataset = load_dataset("cais/mmlu", "all", split="test")
+            
+        # Convert to lists for easier handling
         dev_list = [ex for ex in dev_dataset]
         test_list = [ex for ex in test_dataset]
+        
+        # Get all unique subjects
         subjects = sorted(list(set(ex['subject'] for ex in test_list)))
         logger.info(f"Found {len(subjects)} subjects in MMLU dataset")
         
+        # Organize all examples by subject (no pre-sampling)
         subject_to_examples = {}
         for subject in subjects:
             subject_exs = [ex for ex in test_list if ex['subject'] == subject]
@@ -40,18 +50,27 @@ def load_mmlu_dataset():
         logger.error(f"Error loading MMLU dataset: {e}")
         return None, None, None
 
-def create_few_shot_prompt(dev_examples, test_example, num_shots=5):
+def create_few_shot_prompt(dev_examples, test_example, num_shots=2):
+    """Create a few-shot prompt for MMLU with examples from dev set"""
+    # Get examples of the same subject for the few-shot context
     subject = test_example['subject']
     subject_examples = [ex for ex in dev_examples if ex['subject'] == subject]
-    random.seed(42)
-    shot_examples = random.sample(subject_examples, num_shots)
-    prompt = ""
     
+    # Select shot examples
+    if len(subject_examples) <= num_shots:
+        shot_examples = subject_examples
+    else:
+        # Use deterministic sampling for reproducibility
+        random.seed(42)
+        shot_examples = random.sample(subject_examples, num_shots)
+    
+    # Build the few-shot prompt with examples
+    prompt = ""
     for example in shot_examples:
         question = example['question']
         choices = example['choices']
         answer_idx = example['answer']
-        correct_letter = chr(65 + answer_idx) 
+        correct_letter = chr(65 + answer_idx)  # Convert 0,1,2,3 to A,B,C,D
         
         prompt += f"Question: {question}\n"
         prompt += f"A. {choices[0]}\n"
@@ -60,6 +79,7 @@ def create_few_shot_prompt(dev_examples, test_example, num_shots=5):
         prompt += f"D. {choices[3]}\n"
         prompt += f"Answer: {correct_letter}\n\n"
     
+    # Add the test question
     prompt += f"Question: {test_example['question']}\n"
     prompt += f"A. {test_example['choices'][0]}\n"
     prompt += f"B. {test_example['choices'][1]}\n"
@@ -70,8 +90,11 @@ def create_few_shot_prompt(dev_examples, test_example, num_shots=5):
     return prompt
 
 def extract_answer(full_response, prompt):
+    """Extract the model's answer from its response"""
+    # The model's answer is after the prompt
     model_answer = full_response[len(prompt):].strip()
     
+    # First try to find a direct pattern
     patterns = [
         r"^([A-D])",  # Just starts with A, B, C, or D
         r"([A-D])\.",  # Letter followed by period
@@ -84,9 +107,10 @@ def extract_answer(full_response, prompt):
         if match:
             return match.group(1)
     
-    # for char in model_answer:
-    #     if char in "ABCD":
-    #         return char
+    # Fallback: just look for the first occurrence of A, B, C, or D
+    for char in model_answer:
+        if char in "ABCD":
+            return char
     
     return None
 
@@ -465,6 +489,8 @@ class Llama:
         
         # Get golden output
         golden_output, first_token = self.sample_golden(prompt)
+        gc.collect()
+        torch.cuda.empty_cache()
         
         # Extract answer
         predicted_letter = extract_answer(golden_output, prompt)
@@ -494,10 +520,12 @@ class Llama:
             'first_token': first_token,
         }
     
-    def process_mmlu_example_faulty(self, test_example, dev_examples, prompt, num_shots=1):
+    def process_mmlu_example_faulty(self, test_example, dev_examples, prompt, num_shots=3):
         """Run faulty MMLU inference and extract results"""
         # Get faulty output
         faulty_output, faulty_token = self.sample_faulty(prompt)
+        gc.collect()
+        torch.cuda.empty_cache()
         
         # Extract answer
         predicted_letter = extract_answer(faulty_output, prompt)
@@ -536,25 +564,24 @@ if __name__ == "__main__":
     if not dev_examples or not subject_to_examples or not subjects:
         logger.error("Failed to load MMLU dataset. Exiting.")
         exit(1)
+    subjects = [s for s in subjects if s != "college_medicine" and s != "high_school_european_history"]
+    random.shuffle(subjects)
 
     # Configure Llama model with low temperature for multiple choice
     llama_config = {
-        'temperature': 0,
-        'topp': 0.1,
-        'max': 300,
-        'poolsize': 44,
-        'fp16': True,
-        'precision': 'int8',
-        'onnxdir': 'alpaca',
-        'layer_files': 'injection_llm',
+        'temperature': 0.01,
+        'topp': 0.9,
+        'max': 650,
+        'poolsize': 39,
+        'fp16': True
     }
 
     # Create Llama instance
-    persistent_llama = Llama(onnxdir=llama_config['onnxdir'], config=llama_config)
+    persistent_llama = Llama(onnxdir='decoders/7B16', config=llama_config)
 
     # Create CSV file for results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_filename = 'mmlu_fault_injection_results1.csv'
+    csv_filename = f'mmlu_fault_injection_results.csv'
     file_exists = os.path.isfile(csv_filename)
     
     with open(csv_filename, 'a' if file_exists else 'w', newline='') as csvfile:
@@ -575,9 +602,11 @@ if __name__ == "__main__":
     subject_index = 0
     subjects_used = set()
     
-    
-    for layer_file in os.listdir(llama_config['layer_files']):
-        config_path = os.path.join(llama_config['layer_files'], layer_file)
+    # Start experiment loop
+    for layer_file in os.listdir("injection_llm"):
+        #if layer_file in ["decoder-merge-31_o_proj.json","decoder-merge-15_q_proj.json"]:
+            #continue
+        config_path = os.path.join("injection_llm", layer_file)
         # Skip directories
         if os.path.isdir(config_path):
             continue
@@ -588,16 +617,20 @@ if __name__ == "__main__":
         logger.info(f"{'='*40}")
         
         # For each fault model
-        for fault_model in ['INPUT','WEIGHT','INPUT16','WEIGHT16']: 
-            for bit_position in range(16):
+        #for fault_model in ['INPUT','WEIGHT','INPUT16','WEIGHT16','RANDOM','RANDOM_BITFLIP']:
+        for fault_model in ['RANDOM_BITFLIP']:
+            # For each bit position (0-7)
+            for bit_position in range(8,16):
+                # Select a subject in rotation
                 curr_subject = subjects[subject_index % len(subjects)]
                 subjects_used.add(curr_subject)
                 examples = subject_to_examples[curr_subject]
                 
-                
+                # Sample 2 different questions from this subject
                 if len(examples) >= 2:
                     test_examples = random.sample(examples, 2)
                 else:
+                    # Fallback if subject has only one example
                     test_examples = [examples[0], examples[0]]
                 
                 print(f"\n{'-'*40}")
@@ -605,11 +638,11 @@ if __name__ == "__main__":
                 print(f"Using subject: {curr_subject} (Subject {subject_index % len(subjects) + 1}/57)")
                 print(f"{'-'*40}")
                 
-                
+                # Set seed for deterministic results
                 random_seed = (bit_position * 1000 + 1)
                 persistent_llama.seed = random_seed
                 
-                
+                # Create faulty decoder for this configuration
                 logger.info(f"Creating faulty decoder for {fault_model} on bit position {bit_position}...")
                 if fault_model in ['INPUT', 'INPUT16']:
                     faulty_path = modify_onnx_graph_input(config, fault_model, bit_position)
@@ -618,7 +651,7 @@ if __name__ == "__main__":
                 else:
                     faulty_path = modify_onnx_graph_random(config, fault_model, bit_position)
                 
-            
+                # Run both experiments with different questions
                 for experiment in range(2):
                     test_example = test_examples[experiment]
                     print(f"\nRunning experiment {experiment} with token position 0 (first token)")
@@ -695,7 +728,8 @@ if __name__ == "__main__":
                 subject_index += 1
                 gc.collect()
 
-    logger.info("\nExperiments completed.")
+    # Print coverage statistics
+    logger.info(f"\nExperiments completed.")
     logger.info(f"Used {len(subjects_used)} out of {len(subjects)} subjects")
     
     if len(subjects_used) < len(subjects):

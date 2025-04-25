@@ -1,149 +1,188 @@
 import numpy as np
 import onnx
+from onnx import helper, TensorProto
 import onnxruntime as ort
-from onnx import helper, TensorProto, numpy_helper
 
 def create_random_fault_injection(output_name: str, random_value: float):
-    nodes = []
+    """
+    Modified implementation of random fault injection that works with 3D tensors.
     
-    # 1. Get the runtime shape of the tensor.
+    Args:
+        output_name: Name of the tensor to modify
+        random_value: Value to inject at the random position
+        
+    Returns:
+        List of ONNX nodes for fault injection
+    """
+    nodes = []
+    suffix = "_random"
+    
+    # 1. Get the runtime shape of the tensor
     nodes.append(helper.make_node(
         'Shape',
         inputs=[output_name],
-        outputs=['runtime_shape']
+        outputs=['runtime_shape' + suffix]
     ))
     
-    # 2. Generate a random index vector with shape [expected_rank] using RandomUniform.
-    # For a 3D tensor the expected rank is 3.
-    nodes.append(helper.make_node(
-        'RandomUniform',
-        inputs=[],  # shape is provided as attribute.
-        outputs=['random_vals'],
-        dtype=TensorProto.FLOAT,
-        low=0.0,
-        high=1.0,
-        shape=[3]
-    ))
-    # Force the output to be a 1D tensor of shape [3] using Reshape.
-    nodes.append(helper.make_node(
-        'Constant',
-        inputs=[],
-        outputs=['const_shape'],
-        value=helper.make_tensor("const_shape_tensor", TensorProto.INT64, [1], [3])
-    ))
-    nodes.append(helper.make_node(
-        'Reshape',
-        inputs=['random_vals', 'const_shape'],
-        outputs=['random_vals_reshaped'],
-        name="Reshape_random_vals"
-    ))
-    
-    # 3. Cast the runtime shape (INT64) to FLOAT.
+    # 2. Cast runtime shape to FLOAT
     nodes.append(helper.make_node(
         'Cast',
-        inputs=['runtime_shape'],
-        outputs=['runtime_shape_float'],
+        inputs=['runtime_shape' + suffix],
+        outputs=['runtime_shape_float' + suffix],
         to=TensorProto.FLOAT
     ))
-    # Reshape runtime_shape_float to a 1D tensor of length 3.
+    
+    # 3. Generate random indices using RandomUniformLike (doesn't need explicit shape)
     nodes.append(helper.make_node(
-        'Reshape',
-        inputs=['runtime_shape_float', 'const_shape'],
-        outputs=['runtime_shape_float_reshaped'],
-        name="Reshape_runtime_shape_float"
+        'RandomUniformLike',
+        inputs=['runtime_shape' + suffix],
+        outputs=['random_vals' + suffix],
+        dtype=TensorProto.FLOAT,
+        high=1.0,
+        low=0.0
     ))
     
-    # 4. Multiply the reshaped random values by the reshaped runtime shape.
+    # 4. Multiply random values by shape dimensions
     nodes.append(helper.make_node(
         'Mul',
-        inputs=['random_vals_reshaped', 'runtime_shape_float_reshaped'],
-        outputs=['scaled_random']
+        inputs=['random_vals' + suffix, 'runtime_shape_float' + suffix],
+        outputs=['scaled_indices' + suffix]
     ))
     
-    # 5. Floor the scaled random values.
+    # 5. Floor the scaled indices
     nodes.append(helper.make_node(
         'Floor',
-        inputs=['scaled_random'],
-        outputs=['floored_random']
+        inputs=['scaled_indices' + suffix],
+        outputs=['floored_indices' + suffix]
     ))
     
-    # 6. Cast the floored values to INT64 to get valid indices.
+    # 6. Cast to INT64
     nodes.append(helper.make_node(
         'Cast',
-        inputs=['floored_random'],
-        outputs=['random_indices_raw'],
+        inputs=['floored_indices' + suffix],
+        outputs=['indices_int64' + suffix],
         to=TensorProto.INT64
     ))
     
-    # 7. Unsqueeze the random indices so that their shape becomes [1, 3] as required by ScatterND.
+    # 7. Create the dimensions for reshape
     nodes.append(helper.make_node(
         'Constant',
         inputs=[],
-        outputs=['unsqueeze_axes'],
-        value=helper.make_tensor("unsqueeze_axes_value", TensorProto.INT64, [1], [0])
-    ))
-    nodes.append(helper.make_node(
-        'Unsqueeze',
-        inputs=['random_indices_raw', 'unsqueeze_axes'],
-        outputs=['random_indices']
+        outputs=['reshape_dims' + suffix],
+        value=helper.make_tensor(
+            name='reshape_dims_tensor' + suffix,
+            data_type=TensorProto.INT64,
+            dims=[2],
+            vals=[1, 3]  # For a 3D tensor - reshape to [1, 3]
+        )
     ))
     
-    # 8. Create a constant node for the fault value.
+    # 8. Reshape the indices to be compatible with ScatterND
+    nodes.append(helper.make_node(
+        'Reshape',
+        inputs=['indices_int64' + suffix, 'reshape_dims' + suffix],
+        outputs=['indices_reshaped' + suffix]
+    ))
+    
+    # 9. Create a constant for the fault value (FP16)
     nodes.append(helper.make_node(
         'Constant',
         inputs=[],
-        outputs=['fault_value'],
+        outputs=['fault_value' + suffix],
         value=helper.make_tensor(
-            name='const_fault',
+            name='fault_value_tensor' + suffix,
             data_type=TensorProto.FLOAT16,
             dims=[1],
             vals=[random_value]
         )
     ))
     
-    # 9. Use ScatterND to inject the fault value at the generated index.
+    # 10. Use ScatterND to inject the fault
     nodes.append(helper.make_node(
         'ScatterND',
-        inputs=[output_name, 'random_indices', 'fault_value'],
+        inputs=[output_name, 'indices_reshaped' + suffix, 'fault_value' + suffix],
         outputs=[f'{output_name}_faulty']
     ))
     
-    return nodes
+    return nodes  # This was missing!
 
-
-def build_test_model():
-    # Create a simple model:
-    # Input: "x" with shape [1,10]
-    # Weight: identity matrix of shape [10,10]
-    # MatMul: produces "y" which is roughly equal to x (for testing)
-    # Then apply random fault injection on y.
-    input_tensor = helper.make_tensor_value_info("x", TensorProto.FLOAT16, [1, 10, 10])
-    # Identity weight
-    weight_array = np.eye(10, dtype=np.float16)
-    weight = helper.make_tensor("W", TensorProto.FLOAT16, [10, 10], weight_array.flatten().tolist())
-    weight_node = helper.make_node("Constant", inputs=[], outputs=["W"], value=weight)
-    matmul_node = helper.make_node("MatMul", inputs=["x", "W"], outputs=["y"], name="MatMul_Node")
+def test_fp16_fault_injection_3d():
+    # Create a 3D tensor with FP16 data
+    shape = [3, 4, 5]  # [channels, height, width]
+    data = np.ones(shape, dtype=np.float16) * 1.5
     
-    # Random fault injection subgraph on y.
-    fault_nodes = create_random_fault_injection("y", 7.0)  # injecting fault value 7.0
-    # The fault injection produces "y_faulty"
+    # Create ONNX graph inputs and outputs
+    input_tensor = helper.make_tensor_value_info('input', TensorProto.FLOAT16, shape)
+    output_tensor = helper.make_tensor_value_info('output', TensorProto.FLOAT16, shape)
+    faulty_output = helper.make_tensor_value_info('output_faulty', TensorProto.FLOAT16, shape)
     
-    output_tensor = helper.make_tensor_value_info("y_faulty", TensorProto.FLOAT16, [1, 10, 10])
+    # Create a simple identity op to pass through the input
+    identity_node = helper.make_node(
+        'Identity',
+        inputs=['input'],
+        outputs=['output']
+    )
     
-    nodes = [weight_node, matmul_node] + fault_nodes
+    # Create fault injection nodes - inject value 42.0
+    fault_value = 42.0
+    fault_nodes = create_random_fault_injection('output', fault_value)
     
-    graph = helper.make_graph(nodes, "TestGraph", [input_tensor], [output_tensor])
-    model = helper.make_model(graph, producer_name="RandomFaultInjectionTest")
+    # Create the graph with all nodes
+    graph = helper.make_graph(
+        [identity_node] + fault_nodes,
+        'test_fault_injection_3d',
+        [input_tensor],
+        [output_tensor, faulty_output]
+    )
+    
+    # Create the model
+    model = helper.make_model(graph)
+    model.opset_import[0].version = 14  # Use a compatible opset version
+    
+    # Check and save the model
     onnx.checker.check_model(model)
-    return model
+    model_path = 'test_fault_injection_3d.onnx'
+    onnx.save(model, model_path)
+    print(f"Model saved to {model_path}")
+    
+    # Run inference
+    session = ort.InferenceSession(model_path)
+    outputs = session.run(['output', 'output_faulty'], {'input': data})
+    
+    original = outputs[0]
+    faulty = outputs[1]
+    
+    # Find where the fault was injected (where the tensors differ)
+    diff = faulty - original
+    fault_indices = np.where(np.abs(diff) > 0)
+    
+    print(f"Original tensor shape: {original.shape}")
+    print(f"Original tensor dtype: {original.dtype}")
+    print(f"Original tensor sample: {original.flatten()[:5]}")
+    
+    if len(fault_indices[0]) > 0:
+        # Convert the indices to a tuple for indexing
+        idx = tuple(i[0] for i in fault_indices)
+        
+        print(f"\nFault injected at position: {idx}")
+        print(f"Original value at position: {original[idx]}")
+        print(f"Faulty value at position: {faulty[idx]}")
+        print(f"Injected fault value: {fault_value}")
+        
+        # Print a small slice of the tensor around the fault location
+        slices = []
+        for i, pos in enumerate(idx):
+            start = max(0, pos - 1)
+            end = min(original.shape[i], pos + 2)
+            slices.append(slice(start, end))
+        
+        print("\nOriginal tensor slice around fault:")
+        print(original[tuple(slices)])
+        
+        print("\nFaulty tensor slice around fault:")
+        print(faulty[tuple(slices)])
+    else:
+        print("No difference found between original and faulty tensors!")
 
 if __name__ == "__main__":
-    model = build_test_model()
-    onnx.save(model, "random_fault_test.onnx")
-    sess = ort.InferenceSession(model.SerializeToString(), providers=["CPUExecutionProvider"])
-    x = np.random.randn(1,10, 10).astype(np.float16)
-    y = sess.run(None, {"x": x})[0]
-    print("Input x:")
-    print(x)
-    print("Output y_faulty (one element replaced by fault value):")
-    print(y)
+    test_fp16_fault_injection_3d()

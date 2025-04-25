@@ -44,7 +44,7 @@ struct BitFlipKernel {
     OrtValue* output = nullptr;
     api_.KernelContext_GetOutput(context, 0, dims.data(), dim_count, &output);
 
-    // Retrieve bit position from host memory.
+
     void* bit_pos_data_ptr = nullptr;
     api_.GetTensorMutableData(const_cast<OrtValue*>(bit_pos_tensor), &bit_pos_data_ptr);
     int bit_position = *static_cast<int*>(bit_pos_data_ptr);

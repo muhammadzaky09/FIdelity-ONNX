@@ -85,7 +85,7 @@ class BitFlipOp:
             'Perturb',         # Op type
             ['input', 'bit_position'],  # Inputs
             ['output'],        # Outputs
-            domain='custom.bitflip'  # Domain
+            domain='custom.perturb'  # Domain
         )
         
         # Create graph

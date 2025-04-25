@@ -90,7 +90,7 @@ def test_direct_toggle_model(model_path):
     so = ort.SessionOptions()
     so.register_custom_ops_library(_get_library_path())
     
-    session = ort.InferenceSession(model_path, so, providers=['CPUExecutionProvider'])
+    session = ort.InferenceSession(model_path, so, providers=['CUDAExecutionProvider'])
     
     # Generate test values with special focus on problematic cases
     test_values = [

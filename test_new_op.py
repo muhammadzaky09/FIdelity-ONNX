@@ -48,7 +48,7 @@ class PerturbOp:
             'Perturb',
             ['input', 'bit_position'],
             ['output'],
-            domain='custom.bitflip'
+            domain='custom.perturb'
         )
 
         # Create graph
@@ -115,7 +115,7 @@ def test_large_tensor():
         (4, 4, 4, 4)      # 4D tensor
     ]
 
-    bit_position = 13  # Flip a bit in the exponent or mantissa
+    bit_position = 14  # Flip a bit in the exponent or mantissa
 
     for shape in test_shapes:
         logger.info(f"Testing tensor of shape: {shape}")

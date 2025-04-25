@@ -19,8 +19,8 @@ def find_weight_constant_node(graph, candidate):
     for node in graph.node:
         if node.op_type == "Constant":
             if candidate in node.output:
-                # Use the node name if available; otherwise, return the candidate (i.e. the constant's output)
-                return node.name if node.name != "" else candidate
+                # Return just the candidate name (the tensor name)
+                return candidate
     return None
 
 def parse_transformer_pairs(model_path: str):
@@ -42,9 +42,10 @@ def parse_transformer_pairs(model_path: str):
     init_dict = {init.name: init for init in graph.initializer}
     
     for pattern_name, pattern in patterns.items():
-        round_node_name = None
-        matmul_node_name = None
-        weight_node_name = None
+        round_node = None
+        round_output = None
+        matmul_node = None
+        weight_tensor = None
         
         # Iterate over nodes to find nodes that are part of the subgraph.
         for node in graph.node:
@@ -60,47 +61,50 @@ def parse_transformer_pairs(model_path: str):
             if not node_relevant:
                 continue
             
-            # If the node is a Round node (or has Round in its op type), record it.
+            # If the node is a Round node, record it and its output tensor name
             if node.op_type == "Round":
-                round_node_name = node.name if node.name else (node.output[0] if node.output else None)
+                round_node = node.name if node.name else None
+                if node.output and len(node.output) > 0:
+                    round_output = node.output[0]
+                
             # If the node is a MatMul, record its identity and try to identify its weight input.
             elif node.op_type == "MatMul":
-                matmul_node_name = node.name if node.name else (node.output[0] if node.output else None)
+                matmul_node = node.name if node.name else (node.output[0] if node.output else None)
                 if len(node.input) >= 2:
                     candidate = node.input[1]
                     # First, check if the candidate is still in the initializer dictionary.
                     if candidate in init_dict:
-                        weight_node_name = candidate
+                        weight_tensor = candidate
                     else:
                         # Otherwise, try to find a Constant node that produces this candidate.
-                        weight_node_name = find_weight_constant_node(graph, candidate)
+                        weight_tensor = find_weight_constant_node(graph, candidate)
             
-            # If we’ve found all three, break early.
-            if round_node_name and matmul_node_name and weight_node_name:
+            # If we've found all necessary components, break early.
+            if round_output and matmul_node and weight_tensor:
                 break
         
-        # Save info to JSON if all nodes are found.
-        if round_node_name and matmul_node_name and weight_node_name:
+        # Save info to JSON with the new format if all components are found.
+        if round_output and matmul_node and weight_tensor:
             info = {
-                "round_node": round_node_name,
-                "matmul_node": matmul_node_name,
-                "weight_node": weight_node_name+'_const',
-                "decoder_path": model_path
+                "input_tensor": round_output,
+                "target_layer": matmul_node,
+                "weight_tensor": weight_tensor,
+                "model_name": model_path
             }
             decoder_name = os.path.basename(model_path).replace('.onnx', '')
-            json_filename = f'input_llmfp16/{decoder_name}_{pattern_name}.json'
+            json_filename = f'input_llmint8/{decoder_name}_{pattern_name}.json'
             with open(json_filename, 'w') as f:
                 json.dump(info, f, indent=4)
             print(f"Saved JSON for pattern '{pattern_name}' as {json_filename}")
         else:
-            print(f"Could not find all nodes for pattern '{pattern_name}':")
-            print("  round_node:", round_node_name)
-            print("  matmul_node:", matmul_node_name)
-            print("  weight_node:", weight_node_name)
+            print(f"Could not find all components for pattern '{pattern_name}':")
+            print("  input_tensor (round output):", round_output)
+            print("  target_layer (matmul):", matmul_node)
+            print("  weight_tensor:", weight_tensor)
 
 if __name__ == "__main__":
     # Directory containing your ONNX files.
-    onnx_dir = "decoders/fp16"
+    onnx_dir = "decoders"
     # Use glob to find all .onnx files in the specified directory.
     onnx_files = glob.glob(os.path.join(onnx_dir, "*.onnx"))
     print(f"Found {len(onnx_files)} ONNX files in directory '{onnx_dir}'")
