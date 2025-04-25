@@ -1145,7 +1145,7 @@ if __name__ == "__main__":
                             'Faulty_Raw_Output': faulty_result['model_output'],
                             'Golden_Token': golden_result['first_token'],
                             'Faulty_Token': faulty_result['faulty_token'],
-                            'Target_Nonzeros': str(faulty_result['target_nonzeros']) if faulty_result.get('target_nonzeros') is not None else "None",
+                            'Target_Nonzeros': str(len(faulty_result['target_nonzeros'])) if faulty_result.get('target_nonzeros') is not None else "None",
                             'Logits_Equal': logits_equal
                         })
                 
