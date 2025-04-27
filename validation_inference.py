@@ -22,7 +22,19 @@ from datetime import datetime
 import gc
 import csv
 import json
-
+def print_node_info(node, description="Node"):
+    """Print detailed information about a node's inputs and outputs"""
+    print(f"\n{description}: {node.name}")
+    print("OPERATION:", node.op_type)
+    print("INPUTS (receives):")
+    for i, input_name in enumerate(node.input):
+        print(f"  Input {chr(65+i)}")
+        print(f"  name: {input_name}")
+    print("OUTPUTS:")
+    for i, output_name in enumerate(node.output):
+        print(f"  Output {chr(67+i)}")
+        print(f"  name: {output_name}")
+    print()
 EVALUATION_SUBJECTS = [
     "abstract_algebra",
     "anatomy",
@@ -205,6 +217,8 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     )
     new_nodes.append(target_output_node)
     print("target node:", target_output_node)
+    print(f"Original target: {original_target_output}")
+    print(f"Cloned target: {cloned_target_output}")
     add_node = helper.make_node(
         'Add',
         [original_target_output, cloned_target_output],
@@ -219,7 +233,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 f"{original_target_output}_final" if inp == original_target_output else inp
                 for inp in node.input
             ]
-
+    print_node_info(add_node, description="Add Node")
     model.graph.ClearField('node')
     model.graph.node.extend(new_nodes)
     
@@ -361,7 +375,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
                 f"{original_target_output}_final" if inp == original_target_output else inp
                 for inp in node.input
             ]
-    
+    print_node_info(add_node, description="Add Node")
     model.graph.ClearField("node")
     model.graph.node.extend(new_nodes)
     model.graph.output.extend([
