@@ -67,7 +67,6 @@ def analyze_path(model, start_pattern, target_config):
     
     return None
 
-
 def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     model_path = config["model_name"]
     output_path = config.get("output_path", model_path.replace(".onnx", "_injected.onnx"))
@@ -1030,7 +1029,7 @@ if __name__ == "__main__":
         
         # For each fault model
         for fault_model in ['INPUT','WEIGHT','INPUT16','WEIGHT16']: 
-            for bit_position in range(16):
+            for bit_position in range(8):
                 curr_subject = subjects[subject_index % len(subjects)]
                 subjects_used.add(curr_subject)
                 examples = subject_to_examples[curr_subject]

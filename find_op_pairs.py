@@ -8,37 +8,80 @@ import numpy as np
 from inject_utils.utils import delta_init
 from axes_parser import patch_reduce_ops, move_initializers_to_constant_for_matmul
 
-def analyze_path(model, start_pattern, target_config):
+# def analyze_path(model, start_pattern, target_config):
     
+#     consumers = defaultdict(list)
+#     for node in model.graph.node:
+#         for inp in node.input:
+#             consumers[inp].append(node)
+#     allowed_op_type = target_config.split("/")[-1]
+#     source_nodes = [n for n in model.graph.node if start_pattern in n.output[0]]
+    
+#     for src_node in source_nodes:
+#         visited = set()
+#         queue = deque([(src_node.output[0], [src_node])])
+#         while queue:
+#             current_tensor, path = queue.popleft()
+#             if current_tensor in visited:
+#                 continue
+#             visited.add(current_tensor)
+#             for consumer in consumers.get(current_tensor, []):
+#                 new_path = path + [consumer]
+#                 if consumer.op_type == allowed_op_type and target_config in consumer.name:
+#                     external_inputs = []
+#                     for node in new_path:
+#                         if node.op_type == 'Mul':
+#                             external_inputs.extend(
+#                                 inp for inp in node.input if inp not in {n.output[0] for n in new_path}
+#                             )
+#                     return (src_node, consumer, new_path, external_inputs)
+#                 for out in consumer.output:
+#                     queue.append((out, new_path))
+#     return None
+
+def analyze_path(model, start_pattern, target_config):
+    # Build consumer map lazily and only explore relevant paths
     consumers = defaultdict(list)
-    for node in model.graph.node:
-        for inp in node.input:
-            consumers[inp].append(node)
     allowed_op_type = target_config.split("/")[-1]
-    source_nodes = [n for n in model.graph.node if start_pattern in n.output[0]]
+    
+    # Only find source nodes matching the pattern
+    source_nodes = [n for n in model.graph.node if any(start_pattern in output for output in n.output)]
     
     for src_node in source_nodes:
+        # Perform iterative DFS rather than BFS for better memory locality
         visited = set()
-        queue = deque([(src_node.output[0], [src_node])])
-        while queue:
-            current_tensor, path = queue.popleft()
+        stack = [(src_node.output[0], [src_node])]
+        
+        while stack:
+            current_tensor, path = stack.pop()
             if current_tensor in visited:
                 continue
             visited.add(current_tensor)
-            for consumer in consumers.get(current_tensor, []):
-                new_path = path + [consumer]
+            
+            # Lazily build consumer map only for tensors we're visiting
+            if current_tensor not in consumers:
+                for node in model.graph.node:
+                    if current_tensor in node.input:
+                        consumers[current_tensor].append(node)
+            
+            # Check if any consumer is our target
+            for consumer in consumers[current_tensor]:
                 if consumer.op_type == allowed_op_type and target_config in consumer.name:
+                    # Target found, collect external inputs and return
                     external_inputs = []
-                    for node in new_path:
+                    for node in path + [consumer]:
                         if node.op_type == 'Mul':
                             external_inputs.extend(
-                                inp for inp in node.input if inp not in {n.output[0] for n in new_path}
+                                inp for inp in node.input if inp not in {n.output[0] for n in path + [consumer]}
                             )
-                    return (src_node, consumer, new_path, external_inputs)
+                    return (src_node, consumer, path + [consumer], external_inputs)
+                
+                # If not target, add to stack for further exploration
+                new_path = path + [consumer]
                 for out in consumer.output:
-                    queue.append((out, new_path))
+                    stack.append((out, new_path))
+    
     return None
-
 
 def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     model_path = config["model_name"]
@@ -391,8 +434,8 @@ if __name__ == "__main__":
         "fp16": True,
         "precision": "int8"
     }
-    fault_model = "RANDOM_BITFLIP"  # or "WEIGHT16"
+    fault_model = "INPUT"  # or "WEIGHT16"
     bit_position = 3
-    # modify_onnx_graph_input(config, llama_config, fault_model, bit_position)
+    modify_onnx_graph_input(config, llama_config, fault_model, bit_position)
     # modify_onnx_graph_weight(config, llama_config, fault_model, bit_position)
-    modify_onnx_graph_random(config, llama_config, fault_model, bit_position)
+    # modify_onnx_graph_random(config, llama_config, fault_model, bit_position)
