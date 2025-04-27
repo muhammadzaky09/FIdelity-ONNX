@@ -714,8 +714,10 @@ class Llama:
             # If this is the target decoder layer, call the faulty module.
             if idx == self.fault_config['target_decoder_idx']:
                 outputs = self._faulty_decode(inputs, idx)
+                print('wawawawaw target token, inject fault')
                 if 'target_layer_output' in outputs:
                     target_layer_output = outputs['target_layer_output']
+                    print("target: ",np.count_nonzero(target_layer_output))
             else:
                 outputs = self.decoder.decode(inputs, idx)
 

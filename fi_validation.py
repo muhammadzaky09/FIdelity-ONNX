@@ -260,7 +260,7 @@ if __name__ == "__main__":
                 print(f"Target layer: {config['target_layer']}")
                 
                 # Inner loop: Run experiments for all fault models with this layer config
-                fault_models = ['INPUT','WEIGHT','INPUT16','WEIGHT16']
+                fault_models = ['INPUT']
                 
                 for fault_model in fault_models:
                     try:
