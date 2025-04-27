@@ -438,7 +438,29 @@ def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=Non
 def load_mmlu_dataset():
     try:
         dev_dataset = load_dataset("cais/mmlu", "miscellaneous", split="dev")
+        dev_dataset = dev_dataset.filter(lambda x: x['subject'] in ["high_school_biology",
+    "high_school_chemistry",
+    "high_school_computer_science",
+    "high_school_european_history",
+    "high_school_geography",
+    "high_school_government_and_politics",
+    "high_school_macroeconomics",
+    "high_school_mathematics",
+    "high_school_microeconomics",
+    "high_school_physics",
+    "high_school_psychology"])
         test_dataset = load_dataset("cais/mmlu", "miscellaneous", split="test")
+        test_dataset = test_dataset.filter(lambda x: x['subject'] in ["high_school_biology",
+    "high_school_chemistry",
+    "high_school_computer_science",
+    "high_school_european_history",
+    "high_school_geography",
+    "high_school_government_and_politics",
+    "high_school_macroeconomics",
+    "high_school_mathematics",
+    "high_school_microeconomics",
+    "high_school_physics",
+    "high_school_psychology"])
         dev_list = [ex for ex in dev_dataset]
         test_list = [ex for ex in test_dataset]
         subjects = sorted(list(set(ex['subject'] for ex in test_list)))
@@ -731,9 +753,11 @@ class Llama:
     def _faulty_decode(self, inputs: dict, idx: int):
         from llama.memory_pool import OrtWrapper
         path = self.fault_config['faulty_decoder_path']
+        print("path: ", path)
         if path not in self.faulty_decoders:
             self.faulty_decoders[path] = OrtWrapper(path)
         faulty_handler = self.faulty_decoders[path]
+        print("faulty handler: ", faulty_handler)
         outputs = faulty_handler.forward(inputs)
         return outputs
 
