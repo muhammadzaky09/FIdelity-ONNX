@@ -740,6 +740,7 @@ class Llama:
                 if 'target_layer_output' in outputs:
                     target_layer_output = outputs['target_layer_output']
                     print("target: ",np.count_nonzero(target_layer_output))
+                    print(target_layer_output)
             else:
                 outputs = self.decoder.decode(inputs, idx)
 
