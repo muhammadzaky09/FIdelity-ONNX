@@ -437,8 +437,8 @@ def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=Non
 
 def load_mmlu_dataset():
     try:
-        dev_dataset = load_dataset("cais/mmlu", "all", split="dev")
-        test_dataset = load_dataset("cais/mmlu", "all", split="test")
+        dev_dataset = load_dataset("cais/mmlu", "miscellaneous", split="dev")
+        test_dataset = load_dataset("cais/mmlu", "miscellaneous", split="test")
         dev_list = [ex for ex in dev_dataset]
         test_list = [ex for ex in test_dataset]
         subjects = sorted(list(set(ex['subject'] for ex in test_list)))
@@ -1059,7 +1059,7 @@ if __name__ == "__main__":
                     faulty_path = modify_onnx_graph_random(config, llama_config,fault_model, bit_position)
                 
             
-                for experiment in range(2):
+                for experiment in range(1):
                     test_example = test_examples[experiment]
                     print(f"\nRunning experiment {experiment} with token position 0 (first token)")
                     print(f"Question: {test_example['question']}")
