@@ -155,6 +155,72 @@ def create_weight16_mask(matmul_output="y", masked_output="y_masked", block_leng
     nodes = []
     suffix = "_mask"
     
+    # Define all constants at the beginning
+    # Create a constant for index 0
+    nodes.append(helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["zero_const" + suffix],
+        value=helper.make_tensor(
+            name="zero_const_tensor" + suffix,
+            data_type=TensorProto.INT64,
+            dims=[],  # scalar
+            vals=[0]
+        )
+    ))
+    
+    # Create a constant for index 1
+    nodes.append(helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["one_const" + suffix],
+        value=helper.make_tensor(
+            name="one_const_tensor" + suffix,
+            data_type=TensorProto.INT64,
+            dims=[],  # scalar
+            vals=[1]
+        )
+    ))
+    
+    # Create a constant for index 2
+    nodes.append(helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["two_const" + suffix],
+        value=helper.make_tensor(
+            name="two_const_tensor" + suffix,
+            data_type=TensorProto.INT64,
+            dims=[],  # scalar
+            vals=[2]
+        )
+    ))
+    
+    # Create a constant for -1
+    nodes.append(helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["neg_one_const" + suffix],
+        value=helper.make_tensor(
+            name="neg_one_const_tensor" + suffix,
+            data_type=TensorProto.INT64,
+            dims=[],  # scalar
+            vals=[-1]
+        )
+    ))
+    
+    # Create axes input for Unsqueeze
+    nodes.append(helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["unsqueeze_axes" + suffix],
+        value=helper.make_tensor(
+            name="unsqueeze_axes_tensor" + suffix,
+            data_type=TensorProto.INT64,
+            dims=[1],
+            vals=[0]
+        )
+    ))
+    
     # 1. Get the shape of the input tensor
     nodes.append(helper.make_node(
         "Shape",
@@ -176,34 +242,7 @@ def create_weight16_mask(matmul_output="y", masked_output="y_masked", block_leng
         axis=0
     ))
     
-    # Create a constant for index 0
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["zero_const" + suffix],
-        value=helper.make_tensor(
-            name="zero_const_tensor" + suffix,
-            data_type=TensorProto.INT64,
-            dims=[],  # scalar
-            vals=[0]
-        )
-    ))
-    
-   
-    
     # 3. Calculate the second-to-last dimension index (rank - 2)
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["two_const" + suffix],
-        value=helper.make_tensor(
-            name="two_const_tensor" + suffix,
-            data_type=TensorProto.INT64,
-            dims=[],  # scalar
-            vals=[2]
-        )
-    ))
-    
     nodes.append(helper.make_node(
         "Sub",
         inputs=["rank" + suffix, "two_const" + suffix],
@@ -334,9 +373,10 @@ def create_weight16_mask(matmul_output="y", masked_output="y_masked", block_leng
         outputs=["ge_mask" + suffix]
     ))
     
+    # FIXED: Changed input from "feature_indices" to "seq_indices"
     nodes.append(helper.make_node(
-        "LessOrEqual",  # Changed from "Less"
-        inputs=["feature_indices" + suffix, "end_idx" + suffix],
+        "Less",  # Using "Less" for exclusive upper bound
+        inputs=["seq_indices" + suffix, "end_idx" + suffix],
         outputs=["lt_mask" + suffix]
     ))
     
@@ -347,9 +387,6 @@ def create_weight16_mask(matmul_output="y", masked_output="y_masked", block_leng
     ))
     
     # 13. Create shape for reshaping the mask
-    # We'll create a shape tensor with rank number of dimensions
-    # All dimensions are 1 except for the second-to-last which is -1 (inferred)
-    
     # First create a tensor of ones with length equal to the rank
     nodes.append(helper.make_node(
         "ConstantOfShape",
@@ -363,25 +400,11 @@ def create_weight16_mask(matmul_output="y", masked_output="y_masked", block_leng
         )
     ))
     
-    # Now update the second-to-last dimension to -1
-    nodes.append(helper.make_node(
-        "Constant",
-        inputs=[],
-        outputs=["neg_one_const" + suffix],
-        value=helper.make_tensor(
-            name="neg_one_const_tensor" + suffix,
-            data_type=TensorProto.INT64,
-            dims=[],  # scalar
-            vals=[-1]
-        )
-    ))
-    
-    # Create an update tensor for ScatterND
+    # FIXED: Use the axes input tensor for Unsqueeze
     nodes.append(helper.make_node(
         "Unsqueeze",
-        inputs=["second_last_dim_idx" + suffix],
-        outputs=["second_last_dim_idx_unsqueezed" + suffix],
-        axes=[0]
+        inputs=["second_last_dim_idx" + suffix, "unsqueeze_axes" + suffix],
+        outputs=["second_last_dim_idx_unsqueezed" + suffix]
     ))
     
     nodes.append(helper.make_node(
@@ -397,14 +420,14 @@ def create_weight16_mask(matmul_output="y", masked_output="y_masked", block_leng
         outputs=["bool_mask_broadcast" + suffix]
     ))
     
-    # 15. Create zeros tensor for masked values
+    # 15. Create zeros tensor for masked values with correct data type
     nodes.append(helper.make_node(
         "ConstantOfShape",
         inputs=["y_shape" + suffix],
         outputs=["zeros" + suffix],
         value=helper.make_tensor(
             name="zeros_value" + suffix,
-            data_type=TensorProto.FLOAT,
+            data_type=TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT,  # FIXED: Use FLOAT16 when fp16=True
             dims=[1],
             vals=[0.0]
         )

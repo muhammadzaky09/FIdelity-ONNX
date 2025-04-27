@@ -204,6 +204,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
         name='target_layer_output_identity'
     )
     new_nodes.append(target_output_node)
+    print("target node:", target_output_node)
     add_node = helper.make_node(
         'Add',
         [original_target_output, cloned_target_output],
@@ -763,6 +764,7 @@ class Llama:
                 if 'target_layer_output' in outputs:
                     target_layer_output = outputs['target_layer_output']
                     print("target: ",np.count_nonzero(target_layer_output))
+                    print("norm:", np.linalg.norm(target_layer_output))
                     print(target_layer_output)
             else:
                 outputs = self.decoder.decode(inputs, idx)

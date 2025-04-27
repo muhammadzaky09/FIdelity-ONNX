@@ -1,8 +1,8 @@
 layer_config,fault_model,bit_position,faulty_norm,max_abs_val,nonzero_count
-decoder-merge-20_gate_proj.json,INPUT,3,0.1364,0.006023,10820
-decoder-merge-20_k_proj.json,INPUT,3,0.0771,0.00663,3920
-decoder-merge-20_up_proj.json,INPUT,3,0.1516,0.00579,10861
-decoder-merge-20_v_proj.json,INPUT,3,0.05756,0.003452,4016
-decoder-merge-20_q_proj.json,INPUT,3,0.0767,0.00528,3940
-decoder-merge-20_o_proj.json,INPUT,3,0.09406,0.005486,4045
-decoder-merge-20_down_proj.json,INPUT,3,0.112,0.007496,4044
+decoder-merge-20_gate_proj.json,WEIGHT16,3,4.473,1.968,10
+decoder-merge-20_k_proj.json,WEIGHT16,3,4.027,2.172,10
+decoder-merge-20_up_proj.json,WEIGHT16,3,4.74,2.346,10
+decoder-merge-20_v_proj.json,WEIGHT16,3,4.51,2.338,10
+decoder-merge-20_q_proj.json,WEIGHT16,3,4.24,2.096,10
+decoder-merge-20_o_proj.json,WEIGHT16,3,1.893,1.441,10
+decoder-merge-20_down_proj.json,WEIGHT16,3,2.297,1.576,10
