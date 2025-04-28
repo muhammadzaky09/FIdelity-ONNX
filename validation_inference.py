@@ -57,41 +57,39 @@ EVALUATION_SUBJECTS = [
 
 def analyze_path(model, start_pattern, target_config):
     target_node = None
-    candidate_targets = []
-    
     for node in model.graph.node:
-        if node.name == target_config:
+        if any(output == target_config for output in node.output):
             target_node = node
+            print(f"Found target node by output tensor: {target_config}")
             break
-        elif target_config.isdigit() and node.name.endswith(target_config):
-            candidate_targets.append(node)
-        elif '/' in target_config and target_config in node.name:
-            candidate_targets.append(node)
-    if target_node is None and candidate_targets:
-        target_node = candidate_targets[0]
-    if target_node is None:
-        print(f"Could not find target node matching '{target_config}' in model")
-        return None
+        elif (node.name == target_config or 
+             (node.name and target_config in node.name) or 
+             (target_config.isdigit() and node.name and node.name.endswith(target_config))):
+            target_node = node
+            print(f"Found target node by name: {node.name}")
+            break
+
     consumers = defaultdict(list)
     for node in model.graph.node:
         for inp in node.input:
             consumers[inp].append(node)
+    
     source_nodes = []
     for node in model.graph.node:
         for output in node.output:
-            if output == start_pattern:
-                source_nodes = [node]
-                print(f"Found exact source tensor match: {output}")
-                break
-            elif start_pattern in output:
+            if start_pattern == output or start_pattern in output:
                 source_nodes.append(node)
+                break
     
     if not source_nodes:
-        print(f"Could not find any source nodes matching '{start_pattern}'")
+        print(f"Could not find any source nodes with output matching '{start_pattern}'")
         return None
+
+    
     for src_node in source_nodes:
-        print(f"Searching for path from {src_node.name} to {target_node.name}")
-      
+        src_id = src_node.name if src_node.name else f"unnamed (output: {src_node.output[0]})"
+        print(f"Searching for path from {src_id}")
+        
         visited = set()
         stack = [(src_node.output[0], [src_node])]
         max_depth = 20 
@@ -101,8 +99,10 @@ def analyze_path(model, start_pattern, target_config):
             if current_tensor in visited:
                 continue
             visited.add(current_tensor)
+            
             if len(path) > max_depth:
                 continue
+            
             for consumer in consumers.get(current_tensor, []):
                 if consumer == target_node:
                     external_inputs = []
@@ -117,7 +117,6 @@ def analyze_path(model, start_pattern, target_config):
                 for out in consumer.output:
                     stack.append((out, new_path))
     
-    print(f"No path found from any source nodes to target {target_node.name}")
     return None
 
 def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):

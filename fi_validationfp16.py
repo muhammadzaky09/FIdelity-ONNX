@@ -28,53 +28,83 @@ def print_node_info(node, description="Node"):
     print()
 
 def analyze_path(model, start_pattern, target_config):
-    target_node = None
-    candidate_targets = []
+    """
+    Find a path from nodes matching start_pattern to the target node with output matching target_config.
     
+    Args:
+        model: The ONNX model
+        start_pattern: Pattern to match for source nodes' outputs
+        target_config: Identifier for target node (can be node name or output tensor name)
+    
+    Returns:
+        Tuple of (source_node, target_node, path, external_inputs) or None if no path found
+    """
+    # Match target by output tensor name OR node name
+    target_node = None
     for node in model.graph.node:
-        if node.name == target_config:
+        # Check if target_config matches any of the node's outputs
+        if any(output == target_config for output in node.output):
             target_node = node
+            print(f"Found target node by output tensor: {target_config}")
             break
-        elif target_config.isdigit() and node.name.endswith(target_config):
-            candidate_targets.append(node)
-        elif '/' in target_config and target_config in node.name:
-            candidate_targets.append(node)
-    if target_node is None and candidate_targets:
-        target_node = candidate_targets[0]
+        # Fall back to traditional name matching
+        elif (node.name == target_config or 
+             (node.name and target_config in node.name) or 
+             (target_config.isdigit() and node.name and node.name.endswith(target_config))):
+            target_node = node
+            print(f"Found target node by name: {node.name}")
+            break
+    
     if target_node is None:
-        print(f"Could not find target node matching '{target_config}' in model")
+        print(f"Could not find target node with output or name '{target_config}'")
+        for node in model.graph.node:
+            if node.op_type == "MatMul":
+                print(f"Available MatMul node - outputs: {node.output}, name: '{node.name}'")
         return None
+    
+    # Get the operation type from the found node
+    allowed_op_type = target_node.op_type
+    node_id = target_node.name if target_node.name else f"unnamed (output: {target_node.output[0]})"
+    print(f"Found target node: {node_id} with op_type: {allowed_op_type}")
+    
+    # Build consumer map
     consumers = defaultdict(list)
     for node in model.graph.node:
         for inp in node.input:
             consumers[inp].append(node)
+    
+    # Find source nodes matching the start pattern in outputs
     source_nodes = []
     for node in model.graph.node:
         for output in node.output:
-            if output == start_pattern:
-                source_nodes = [node]
-                print(f"Found exact source tensor match: {output}")
-                break
-            elif start_pattern in output:
+            if start_pattern == output or start_pattern in output:
                 source_nodes.append(node)
+                break
     
     if not source_nodes:
-        print(f"Could not find any source nodes matching '{start_pattern}'")
+        print(f"Could not find any source nodes with output matching '{start_pattern}'")
         return None
+    
+    print(f"Found {len(source_nodes)} potential source nodes")
+    
+    # Path finding (DFS)
     for src_node in source_nodes:
-        print(f"Searching for path from {src_node.name} to {target_node.name}")
-      
+        src_id = src_node.name if src_node.name else f"unnamed (output: {src_node.output[0]})"
+        print(f"Searching for path from {src_id}")
+        
         visited = set()
         stack = [(src_node.output[0], [src_node])]
-        max_depth = 20 
+        max_depth = 20  # Reasonable limit
         
         while stack:
             current_tensor, path = stack.pop()
             if current_tensor in visited:
                 continue
             visited.add(current_tensor)
+            
             if len(path) > max_depth:
                 continue
+            
             for consumer in consumers.get(current_tensor, []):
                 if consumer == target_node:
                     external_inputs = []
@@ -83,13 +113,14 @@ def analyze_path(model, start_pattern, target_config):
                             external_inputs.extend(
                                 inp for inp in node.input if inp not in {n.output[0] for n in path + [consumer]}
                             )
+                    print(f"Found path from {src_id} to {node_id}, length: {len(path) + 1}")
                     return (src_node, consumer, path + [consumer], external_inputs)
                 
                 new_path = path + [consumer]
                 for out in consumer.output:
                     stack.append((out, new_path))
     
-    print(f"No path found from any source nodes to target {target_node.name}")
+    print(f"No path found from any source nodes to target")
     return None
 
 def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
@@ -599,12 +630,11 @@ if __name__ == "__main__":
     
     # Configuration for fault injection
     config = {
-    "target_layer": "/mlp/down_proj/MatMul",
-    "input_tensor": "/mlp/Mul_output_0",
-    "weight_tensor": "onnx::MatMul_332",
+    "target_layer": "131",
+    "input_tensor": "/input_layernorm/Mul_1_output_0",
+    "weight_tensor": "130",
     "model_name": "decoders/fp16/decoder-merge-20-fp16.onnx"
-    }
-    
+}
     # Available fault models: INPUT, WEIGHT, INPUT16, WEIGHT16
     fault_model = "INPUT"
     bit_position = 3
