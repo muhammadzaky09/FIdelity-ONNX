@@ -26,41 +26,57 @@ def print_node_info(node, description="Node"):
         print(f"  Output {chr(67+i)}")
         print(f"  name: {output_name}")
     print()
+
 def analyze_path(model, start_pattern, target_config):
-    # Build consumer map lazily and only explore relevant paths
+    target_node = None
+    candidate_targets = []
+    
+    for node in model.graph.node:
+        if node.name == target_config:
+            target_node = node
+            break
+        elif target_config.isdigit() and node.name.endswith(target_config):
+            candidate_targets.append(node)
+        elif '/' in target_config and target_config in node.name:
+            candidate_targets.append(node)
+    if target_node is None and candidate_targets:
+        target_node = candidate_targets[0]
+    if target_node is None:
+        print(f"Could not find target node matching '{target_config}' in model")
+        return None
     consumers = defaultdict(list)
+    for node in model.graph.node:
+        for inp in node.input:
+            consumers[inp].append(node)
+    source_nodes = []
+    for node in model.graph.node:
+        for output in node.output:
+            if output == start_pattern:
+                source_nodes = [node]
+                print(f"Found exact source tensor match: {output}")
+                break
+            elif start_pattern in output:
+                source_nodes.append(node)
     
-    # Extract operation type more robustly - remove numeric suffixes
-    import re
-    target_name = target_config.split("/")[-1]
-    allowed_op_type = re.sub(r'_\d+$', '', target_name)  # Remove trailing _number
-    print(f"Looking for operation type: {allowed_op_type} in target: {target_config}")
-    
-    # Only find source nodes matching the pattern
-    source_nodes = [n for n in model.graph.node if any(start_pattern in output for output in n.output)]
-    
+    if not source_nodes:
+        print(f"Could not find any source nodes matching '{start_pattern}'")
+        return None
     for src_node in source_nodes:
-        # Perform iterative DFS rather than BFS for better memory locality
+        print(f"Searching for path from {src_node.name} to {target_node.name}")
+      
         visited = set()
         stack = [(src_node.output[0], [src_node])]
+        max_depth = 20 
         
         while stack:
             current_tensor, path = stack.pop()
             if current_tensor in visited:
                 continue
             visited.add(current_tensor)
-            
-            # Lazily build consumer map only for tensors we're visiting
-            if current_tensor not in consumers:
-                for node in model.graph.node:
-                    if current_tensor in node.input:
-                        consumers[current_tensor].append(node)
-            
-            # Check if any consumer is our target
-            for consumer in consumers[current_tensor]:
-                # More flexible matching for operation types
-                if (consumer.op_type == allowed_op_type and target_config in consumer.name):
-                    # Target found, collect external inputs and return
+            if len(path) > max_depth:
+                continue
+            for consumer in consumers.get(current_tensor, []):
+                if consumer == target_node:
                     external_inputs = []
                     for node in path + [consumer]:
                         if node.op_type == 'Mul':
@@ -69,22 +85,11 @@ def analyze_path(model, start_pattern, target_config):
                             )
                     return (src_node, consumer, path + [consumer], external_inputs)
                 
-                # If not target, add to stack for further exploration
                 new_path = path + [consumer]
                 for out in consumer.output:
                     stack.append((out, new_path))
     
-    # Add debugging info
-    print(f"No path found. Checked {len(source_nodes)} source nodes.")
-    print(f"Source nodes: {[n.name for n in source_nodes]}")
-    print(f"Looking for target pattern: {target_config}")
-    
-    # List all MatMul nodes to help with debugging
-    matmul_nodes = [node for node in model.graph.node if node.op_type == allowed_op_type]
-    print(f"Found {len(matmul_nodes)} {allowed_op_type} nodes in model:")
-    for node in matmul_nodes[:10]:  # Show only first 10 to avoid overwhelming output
-        print(f"  - Name: {node.name}, Outputs: {node.output}")
-    
+    print(f"No path found from any source nodes to target {target_node.name}")
     return None
 
 def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
@@ -139,7 +144,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp16=True
+                fp32=False
             )
             
     else:
@@ -594,14 +599,14 @@ if __name__ == "__main__":
     
     # Configuration for fault injection
     config = {
-        "target_layer": "/self_attn/MatMul_1",
-        "input_tensor": "/self_attn/Softmax_output_0",
-        "weight_tensor": "past_value",
-        "model_name": "decoders/fp16/decoder-merge-20-fp16.onnx"
+    "target_layer": "/mlp/down_proj/MatMul",
+    "input_tensor": "/mlp/Mul_output_0",
+    "weight_tensor": "onnx::MatMul_332",
+    "model_name": "decoders/fp16/decoder-merge-20-fp16.onnx"
     }
     
     # Available fault models: INPUT, WEIGHT, INPUT16, WEIGHT16
-    fault_model = "RANDOM_BITFLIP"
+    fault_model = "INPUT"
     bit_position = 3
     
     # Run fault injection and inference

@@ -56,40 +56,55 @@ EVALUATION_SUBJECTS = [
 ]
 
 def analyze_path(model, start_pattern, target_config):
-    # Build consumer map lazily and only explore relevant paths
+    target_node = None
+    candidate_targets = []
+    
+    for node in model.graph.node:
+        if node.name == target_config:
+            target_node = node
+            break
+        elif target_config.isdigit() and node.name.endswith(target_config):
+            candidate_targets.append(node)
+        elif '/' in target_config and target_config in node.name:
+            candidate_targets.append(node)
+    if target_node is None and candidate_targets:
+        target_node = candidate_targets[0]
+    if target_node is None:
+        print(f"Could not find target node matching '{target_config}' in model")
+        return None
     consumers = defaultdict(list)
+    for node in model.graph.node:
+        for inp in node.input:
+            consumers[inp].append(node)
+    source_nodes = []
+    for node in model.graph.node:
+        for output in node.output:
+            if output == start_pattern:
+                source_nodes = [node]
+                print(f"Found exact source tensor match: {output}")
+                break
+            elif start_pattern in output:
+                source_nodes.append(node)
     
-    # Extract operation type more robustly - remove numeric suffixes
-    import re
-    target_name = target_config.split("/")[-1]
-    allowed_op_type = re.sub(r'_\d+$', '', target_name)  # Remove trailing _number
-   
-    
-    # Only find source nodes matching the pattern
-    source_nodes = [n for n in model.graph.node if any(start_pattern in output for output in n.output)]
-    
+    if not source_nodes:
+        print(f"Could not find any source nodes matching '{start_pattern}'")
+        return None
     for src_node in source_nodes:
-        # Perform iterative DFS rather than BFS for better memory locality
+        print(f"Searching for path from {src_node.name} to {target_node.name}")
+      
         visited = set()
         stack = [(src_node.output[0], [src_node])]
+        max_depth = 20 
         
         while stack:
             current_tensor, path = stack.pop()
             if current_tensor in visited:
                 continue
             visited.add(current_tensor)
-            
-            # Lazily build consumer map only for tensors we're visiting
-            if current_tensor not in consumers:
-                for node in model.graph.node:
-                    if current_tensor in node.input:
-                        consumers[current_tensor].append(node)
-            
-            # Check if any consumer is our target
-            for consumer in consumers[current_tensor]:
-                # More flexible matching for operation types
-                if (consumer.op_type == allowed_op_type and target_config in consumer.name):
-                    # Target found, collect external inputs and return
+            if len(path) > max_depth:
+                continue
+            for consumer in consumers.get(current_tensor, []):
+                if consumer == target_node:
                     external_inputs = []
                     for node in path + [consumer]:
                         if node.op_type == 'Mul':
@@ -98,12 +113,11 @@ def analyze_path(model, start_pattern, target_config):
                             )
                     return (src_node, consumer, path + [consumer], external_inputs)
                 
-                # If not target, add to stack for further exploration
                 new_path = path + [consumer]
                 for out in consumer.output:
                     stack.append((out, new_path))
     
-    
+    print(f"No path found from any source nodes to target {target_node.name}")
     return None
 
 def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
@@ -113,6 +127,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     model = onnx.load(model_path)
     model = patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax"))
     path_info = analyze_path(model, config["input_tensor"], config["target_layer"])
+    print("Path info:", path_info)
     if path_info is None:
         raise ValueError("Could not find a path matching the given patterns.")
     src_node, target_node, full_path, external_inputs = path_info
@@ -157,7 +172,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp16=True
+                fp32=False
             )
             
     else:
@@ -231,7 +246,6 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     model.graph.ClearField('node')
     model.graph.node.extend(new_nodes)
     
-    
     model.graph.output.extend([
         helper.make_tensor_value_info(
             'target_layer_output',
@@ -240,8 +254,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
         )
     ])
 
-
-
+    # Clone any external initializers if needed
     for inp in external_inputs:
         if inp in [i.name for i in model.graph.initializer]:
             orig_init = next(i for i in model.graph.initializer if i.name == inp)
@@ -266,6 +279,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     model = onnx.load(model_path)
     model = patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax"))
     model = move_initializers_to_constant_for_matmul(model)
+    print("Output path:", output_path)
     path_info = analyze_path(model, config["weight_tensor"], config["target_layer"])
     if path_info is None:
         raise ValueError(f"Could not find a weight path from '{config['weight_tensor']}' to target '{config['target_layer']}'.")
@@ -385,7 +399,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
             None  # Shape will be inferred
         )
     ])
-
+    
     for inp in external_inputs:
         if inp in [i.name for i in model.graph.initializer]:
             orig_init = next(i for i in model.graph.initializer if i.name == inp)
@@ -402,7 +416,9 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     else:
         model = shape_inference.infer_shapes(model)
     onnx.save(model, output_path)
+    print(f"Modified WEIGHT injection model saved to {output_path}")
     return output_path
+
 
 def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=None):
     model_path = config["model_name"]
@@ -488,6 +504,7 @@ def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=Non
     onnx.save(model, output_path)
     print(f"Modified random fault injection model saved to {output_path}")
     return output_path
+
 
 def load_mmlu_dataset():
     try:
