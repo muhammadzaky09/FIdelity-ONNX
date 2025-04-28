@@ -81,7 +81,7 @@ def save_matmul_info(matmul_nodes, output_dir="matmul_info"):
     
     for i, matmul_info in enumerate(matmul_nodes):
         # Extract model name from path
-        model_name = os.path.basename(matmul_info["decoder_path"]).replace('.onnx', '')
+        model_name = os.path.basename(matmul_info["model_name"]).replace('.onnx', '')
         
         # Create a JSON filename based on model name and node ID or index
         if "node_id" in matmul_info and matmul_info["node_id"]:
