@@ -30,7 +30,7 @@ def parse_matmul_nodes(model_path: str):
     for node in graph.node:
         if node.op_type == "MatMul":
             # Get node ID (use name if available, output otherwise)
-            node_id = node.name if node.name else node.output[0]
+            target_layer = node.name if node.name else node.output[0]
             
             # Get input tensor name (first input)
             input_tensor = node.input[0] if len(node.input) > 0 else None
@@ -54,18 +54,17 @@ def parse_matmul_nodes(model_path: str):
             # Only add if we have all the required information
             if input_tensor and weight_tensor and output_tensor:
                 matmul_info = {
-                    "node_id": node_id,
+                    "target_layer": target_layer,
                     "input_tensor": input_tensor,
                     "weight_tensor": weight_const_name or weight_tensor,
-                    "output_tensor": output_tensor,
                     "decoder_path": model_path
                 }
                 matmul_nodes.append(matmul_info)
                 
-                print(f"Found MatMul node: {node_id}")
+                print(f"Found MatMul node: {target_layer}")
                 print(f"  Input tensor: {input_tensor}")
                 print(f"  Weight tensor: {weight_const_name or weight_tensor}")
-                print(f"  Output tensor: {output_tensor}")
+
     
     return matmul_nodes
 
@@ -101,9 +100,9 @@ def save_matmul_info(matmul_nodes, output_dir="matmul_info"):
 
 if __name__ == "__main__":
     # Directory containing your ONNX files
-    onnx_dir = "alpaca"
+    onnx_dir = "decoders/fp16"
     # Output directory for JSON files
-    output_dir = "injection_llm"
+    output_dir = "input_llm_fp16"
     
     # Use glob to find all .onnx files in the specified directory
     onnx_files = glob.glob(os.path.join(onnx_dir, "*.onnx"))

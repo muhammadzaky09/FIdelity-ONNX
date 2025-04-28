@@ -7,3 +7,4 @@ onnx-bitflip/src/
 onnxruntime-dev/
 *.onnx
 csvs/
+fault_injection_results/

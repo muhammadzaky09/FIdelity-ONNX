@@ -1,4 +1,9 @@
 import onnx
+import onnxruntime as ort
+import numpy as np
+import json
+import os
+import onnx
 from collections import deque, defaultdict
 from onnx import helper, shape_inference, numpy_helper, TensorProto
 from inject_ops import create_quantized_fault_injection,  create_random_bitflip_injection, create_random_fault_injection, create_input16_mask, create_weight16_mask, create_fp16_fault_injection, create_random_bitflip_fp32
@@ -7,21 +12,7 @@ from itertools import chain
 import numpy as np
 from inject_utils.utils import delta_init
 from axes_parser import patch_reduce_ops, move_initializers_to_constant_for_matmul
-from loguru import logger
-from llama.decoder import Decoder
-from llama.memory_pool import MemoryPoolSimple
-from llama.utils import npsoftmax, seeded_npmultinomial2D
-from llama.logits_process import warp_temperature, warp_topp
-from llama.tokenizer import Tokenizer
-import argparse
-from datasets import load_dataset
-import re
-import os
-import random
-from datetime import datetime
-import gc
-import csv
-import json
+
 def print_node_info(node, description="Node"):
     """Print detailed information about a node's inputs and outputs"""
     print(f"\n{description}: {node.name}")
@@ -38,7 +29,12 @@ def print_node_info(node, description="Node"):
 def analyze_path(model, start_pattern, target_config):
     # Build consumer map lazily and only explore relevant paths
     consumers = defaultdict(list)
-    allowed_op_type = target_config.split("/")[-1]
+    
+    # Extract operation type more robustly - remove numeric suffixes
+    import re
+    target_name = target_config.split("/")[-1]
+    allowed_op_type = re.sub(r'_\d+$', '', target_name)  # Remove trailing _number
+    print(f"Looking for operation type: {allowed_op_type} in target: {target_config}")
     
     # Only find source nodes matching the pattern
     source_nodes = [n for n in model.graph.node if any(start_pattern in output for output in n.output)]
@@ -62,7 +58,8 @@ def analyze_path(model, start_pattern, target_config):
             
             # Check if any consumer is our target
             for consumer in consumers[current_tensor]:
-                if consumer.op_type == allowed_op_type and target_config in consumer.name:
+                # More flexible matching for operation types
+                if (consumer.op_type == allowed_op_type and target_config in consumer.name):
                     # Target found, collect external inputs and return
                     external_inputs = []
                     for node in path + [consumer]:
@@ -76,6 +73,17 @@ def analyze_path(model, start_pattern, target_config):
                 new_path = path + [consumer]
                 for out in consumer.output:
                     stack.append((out, new_path))
+    
+    # Add debugging info
+    print(f"No path found. Checked {len(source_nodes)} source nodes.")
+    print(f"Source nodes: {[n.name for n in source_nodes]}")
+    print(f"Looking for target pattern: {target_config}")
+    
+    # List all MatMul nodes to help with debugging
+    matmul_nodes = [node for node in model.graph.node if node.op_type == allowed_op_type]
+    print(f"Found {len(matmul_nodes)} {allowed_op_type} nodes in model:")
+    for node in matmul_nodes[:10]:  # Show only first 10 to avoid overwhelming output
+        print(f"  - Name: {node.name}, Outputs: {node.output}")
     
     return None
 
@@ -115,7 +123,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=False,
+                fp16=True,
                 is_signed=True
             )
         elif llama_config['precision'] == 'int4':
@@ -123,7 +131,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=False,
+                fp16=True,
                 is_signed=False,
             )    
         elif llama_config['precision'] == 'float16':
@@ -131,7 +139,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=False,
+                fp16=True
             )
             
     else:
@@ -140,7 +148,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=True,
+                fp16=False,
                 is_signed=True
             )
         elif llama_config['precision'] == 'int4':
@@ -148,7 +156,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=True,
+                fp16=False,
                 is_signed=False,
             )    
         elif llama_config['precision'] == 'float16':
@@ -156,7 +164,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=True,
+                fp32=True
             )
 
     original_nodes = list(model.graph.node)
@@ -220,13 +228,15 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
             orig_init = next(i for i in model.graph.initializer if i.name == inp)
             cloned_init = numpy_helper.from_array(numpy_helper.to_array(orig_init), name=f"{inp}{clone_suffix}")
             model.graph.initializer.append(cloned_init)
-    
-    model = shape_inference.infer_shapes(model)
     model.opset_import[0].version = 18
     if llama_config['precision'] == 'float16':
         existing_opsets = {op.domain: op.version for op in model.opset_import}
+        print('existing_opsets', existing_opsets)
         if 'custom.perturb' not in existing_opsets:
             model.opset_import.append(helper.make_opsetid('custom.perturb', 1))
+        model = shape_inference.infer_shapes(model)
+    else:
+        model = shape_inference.infer_shapes(model)
     onnx.save(model, output_path)
     print(f"Modified model saved to {output_path}")
     return output_path
@@ -242,6 +252,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     if path_info is None:
         raise ValueError(f"Could not find a weight path from '{config['weight_tensor']}' to target '{config['target_layer']}'.")
     src_node, target_node, full_path, external_inputs = path_info
+    print(full_path)
 
     clone_suffix = "_fault_injected"
     original_target_output = target_node.output[0]
@@ -263,6 +274,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
+                fp16=True,
                 is_signed=True
             )
         elif llama_config['precision'] == 'int4':
@@ -270,13 +282,15 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
+                fp16=True,
                 is_signed=False
             )
         elif llama_config['precision'] == 'float16':
             injection_nodes = create_fp16_fault_injection(
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
-                bit_position=bit_position
+                bit_position=bit_position,
+                fp32=False
             )
     else:
         if llama_config['precision'] == 'int8':
@@ -361,12 +375,15 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
             cloned_init = numpy_helper.from_array(numpy_helper.to_array(orig_init), name=f"{inp}{clone_suffix}")
             model.graph.initializer.append(cloned_init)
     
-    model = shape_inference.infer_shapes(model)
+    
     model.opset_import[0].version = 18
     if llama_config['precision'] == 'float16':
         existing_opsets = {op.domain: op.version for op in model.opset_import}
         if 'custom.perturb' not in existing_opsets:
             model.opset_import.append(helper.make_opsetid('custom.perturb', 1))
+        model = shape_inference.infer_shapes(model)
+    else:
+        model = shape_inference.infer_shapes(model)
     onnx.save(model, output_path)
     print(f"Modified WEIGHT injection model saved to {output_path}")
     return output_path
@@ -409,12 +426,19 @@ def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=Non
     else:
         if llama_config['fp16']:
             value = delta_init(is_float32=False)
+            injection_nodes = create_random_fault_injection(
+                output_name=target_output,
+                random_value=value,
+                fp16=True
+            )
         else:
             value = delta_init(is_float32=True)
-        injection_nodes = create_random_fault_injection(
-            output_name=target_output,
-            random_value=value
-        )
+            injection_nodes = create_random_fault_injection(
+                output_name=target_output,
+                random_value=value,
+                fp16=False
+            )
+        
     
     new_nodes = []
     faulty_output = f"{target_output}_faulty"
@@ -450,17 +474,150 @@ def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=Non
     print(f"Modified random fault injection model saved to {output_path}")
     return output_path
 
-if __name__ == "__main__":
-    config = {
-    "input_tensor": "/self_attn/o_proj/Round_output_0",  # Use the full output tensor name
-    "target_layer": "/self_attn/o_proj/MatMul",
-    "weight_tensor": "onnx::MatMul_431",
-    "model_name": "decoders/decoder-merge-20.onnx"
-}
+def run_single_decoder_with_fault(config, fault_model='INPUT', bit_position=3):
+    """
+    Run fault injection on a decoder model and perform inference with dummy inputs.
+    
+    Args:
+        config: Dictionary containing model configuration
+        fault_model: The fault model to use (INPUT, WEIGHT, INPUT16, WEIGHT16)
+        bit_position: The bit position for fault injection
+    """
+    # Make sure model_name is set correctly
+    if "decoder_path" in config and "model_name" not in config:
+        config["model_name"] = config["decoder_path"]
+    
+    # Configuration for the model
     llama_config = {
-        "fp16": True,
-        "precision": "int8"
+        "fp16": True,  # Based on model path containing "fp16"
+        "precision": "float16"
     }
-    fault_model = "INPUT"  # or "WEIGHT16"
+    
+    # Set up output path
+    output_dir = "fault_injection_results"
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"{os.path.basename(config['model_name']).replace('.onnx', '')}_{fault_model}_injected.onnx")
+    config["output_path"] = output_path
+    
+    print(f"Applying {fault_model} fault injection with bit position {bit_position}...")
+    
+    # Apply fault injection based on the model type
+    try:
+        if fault_model in ['INPUT', 'INPUT16']:
+            injected_model_path = modify_onnx_graph_input(config, llama_config, fault_model, bit_position)
+        elif fault_model in ['WEIGHT', 'WEIGHT16']:
+            injected_model_path = modify_onnx_graph_weight(config, llama_config, fault_model, bit_position)
+        else:
+            injected_model_path = modify_onnx_graph_random(config, llama_config, fault_model, bit_position)
+        
+        print(f"Created fault-injected model: {injected_model_path}")
+    except Exception as e:
+        print(f"Error during fault injection: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+    
+    # Create dummy input data
+    N = 40           # Sequence length for current tokens
+    lastN = 5        # Previous sequence length
+    totalN = N + lastN  # Total sequence length
+    
+    # Set random seed for reproducibility
+    np.random.seed(bit_position + 42)
+    
+    # Create attention mask (causal attention pattern)
+    attn_mask = np.zeros((1, 1, N, totalN), dtype=np.float16)
+    for i in range(N):
+        attn_mask[0, 0, i, :lastN+i+1] = 1.0
+    
+    # Create position ids
+    position_ids = np.arange(lastN, lastN + N, dtype=np.int64).reshape(1, N)
+    
+    # Create input tensors
+    inputs = {
+        'hidden_in': np.random.rand(1, N, 4096).astype(np.float16),
+        'attn_mask': attn_mask,
+        'position_ids': position_ids,
+        'past_key_in': np.random.rand(1, 32, lastN, 128).astype(np.float16),
+        'past_value_in': np.random.rand(1, 32, lastN, 128).astype(np.float16)
+    }
+    
+    # Run inference on the fault-injected model
+    try:
+        print(f"Creating ONNX Runtime session for {injected_model_path}")
+        providers = ['CUDAExecutionProvider']
+        perturb_lib_path = "llama/onnx_perturb.so"
+        custom_op_lib_path = "llama/onnx_bitflip.so"
+        sess_options = ort.SessionOptions()
+        sess_options.register_custom_ops_library(perturb_lib_path)
+        sess_options.register_custom_ops_library(custom_op_lib_path)
+        session = ort.InferenceSession(injected_model_path, sess_options, providers=providers)
+        
+        # Get all available outputs
+        output_names = [output.name for output in session.get_outputs()]
+        print(f"Available outputs: {output_names}")
+        
+        # Run inference
+        print(f"Running inference with inputs: {list(inputs.keys())}")
+        start_time = time.time()
+        outputs = session.run(output_names, inputs)
+        end_time = time.time()
+        
+        # Create dictionary with outputs
+        output_dict = {name: tensor for name, tensor in zip(output_names, outputs)}
+        
+        # Print output information
+        print(f"Inference completed in {end_time - start_time:.3f} seconds")
+        print("\nOutput summary:")
+        for name, tensor in output_dict.items():
+            print(f"  {name}: shape={tensor.shape}, dtype={tensor.dtype}")
+            if "target_layer_output" in name or "fault_injected" in name:
+                nonzeros = np.count_nonzero(tensor)
+                print(f"    - Non-zero elements: {nonzeros}")
+                print(f"    - Min: {tensor.min()}, Max: {tensor.max()}, Mean: {tensor.mean()}")
+                
+                # Save important outputs to file
+                output_file = os.path.join(output_dir, f"{os.path.basename(config['model_name'])}_{fault_model}_{name}.npy")
+                np.save(output_file, tensor)
+                print(f"    - Saved to {output_file}")
+        
+        return output_dict
+    
+    except Exception as e:
+        print(f"Error during inference: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+if __name__ == "__main__":
+    import time
+    
+    # Configuration for fault injection
+    config = {
+        "target_layer": "/self_attn/MatMul_1",
+        "input_tensor": "/self_attn/Softmax_output_0",
+        "weight_tensor": "past_value",
+        "model_name": "decoders/fp16/decoder-merge-20-fp16.onnx"
+    }
+    
+    # Available fault models: INPUT, WEIGHT, INPUT16, WEIGHT16
+    fault_model = "RANDOM_BITFLIP"
     bit_position = 3
-    modify_onnx_graph_input(config, llama_config, fault_model, bit_position)
+    
+    # Run fault injection and inference
+    results = run_single_decoder_with_fault(config, fault_model, bit_position)
+    
+    if results is not None:
+        print("\nFault injection and inference completed successfully!")
+        
+        # Additional analysis if needed
+        if 'target_layer_output' in results:
+            fault_tensor = results['target_layer_output']
+            print(f"\nFault analysis for target layer output:")
+            print(f"  - Shape: {fault_tensor.shape}")
+            print(f"  - Non-zero count: {np.count_nonzero(fault_tensor)}")
+            print(f"  - Mean absolute value: {np.abs(fault_tensor).mean()}")
+            print(f"  - Max absolute value: {np.abs(fault_tensor).max()}")
+            print(np.linalg.norm(fault_tensor))
+    else:
+        print("\nFault injection or inference failed.")

@@ -22,19 +22,7 @@ from datetime import datetime
 import gc
 import csv
 import json
-def print_node_info(node, description="Node"):
-    """Print detailed information about a node's inputs and outputs"""
-    print(f"\n{description}: {node.name}")
-    print("OPERATION:", node.op_type)
-    print("INPUTS (receives):")
-    for i, input_name in enumerate(node.input):
-        print(f"  Input {chr(65+i)}")
-        print(f"  name: {input_name}")
-    print("OUTPUTS:")
-    for i, output_name in enumerate(node.output):
-        print(f"  Output {chr(67+i)}")
-        print(f"  name: {output_name}")
-    print()
+
 EVALUATION_SUBJECTS = [
     "abstract_algebra",
     "anatomy",
@@ -110,6 +98,80 @@ def analyze_path(model, start_pattern, target_config):
     
     return None
 
+def print_node_info(node, description="Node"):
+    """Print detailed information about a node's inputs and outputs"""
+    print(f"\n{description}: {node.name}")
+    print("OPERATION:", node.op_type)
+    print("INPUTS (receives):")
+    for i, input_name in enumerate(node.input):
+        print(f"  Input {chr(65+i)}")
+        print(f"  name: {input_name}")
+    print("OUTPUTS:")
+    for i, output_name in enumerate(node.output):
+        print(f"  Output {chr(67+i)}")
+        print(f"  name: {output_name}")
+    print()
+def analyze_path(model, start_pattern, target_config):
+    # Build consumer map lazily and only explore relevant paths
+    consumers = defaultdict(list)
+    
+    # Extract operation type more robustly - remove numeric suffixes
+    import re
+    target_name = target_config.split("/")[-1]
+    allowed_op_type = re.sub(r'_\d+$', '', target_name)  # Remove trailing _number
+    print(f"Looking for operation type: {allowed_op_type} in target: {target_config}")
+    
+    # Only find source nodes matching the pattern
+    source_nodes = [n for n in model.graph.node if any(start_pattern in output for output in n.output)]
+    
+    for src_node in source_nodes:
+        # Perform iterative DFS rather than BFS for better memory locality
+        visited = set()
+        stack = [(src_node.output[0], [src_node])]
+        
+        while stack:
+            current_tensor, path = stack.pop()
+            if current_tensor in visited:
+                continue
+            visited.add(current_tensor)
+            
+            # Lazily build consumer map only for tensors we're visiting
+            if current_tensor not in consumers:
+                for node in model.graph.node:
+                    if current_tensor in node.input:
+                        consumers[current_tensor].append(node)
+            
+            # Check if any consumer is our target
+            for consumer in consumers[current_tensor]:
+                # More flexible matching for operation types
+                if (consumer.op_type == allowed_op_type and target_config in consumer.name):
+                    # Target found, collect external inputs and return
+                    external_inputs = []
+                    for node in path + [consumer]:
+                        if node.op_type == 'Mul':
+                            external_inputs.extend(
+                                inp for inp in node.input if inp not in {n.output[0] for n in path + [consumer]}
+                            )
+                    return (src_node, consumer, path + [consumer], external_inputs)
+                
+                # If not target, add to stack for further exploration
+                new_path = path + [consumer]
+                for out in consumer.output:
+                    stack.append((out, new_path))
+    
+    # Add debugging info
+    print(f"No path found. Checked {len(source_nodes)} source nodes.")
+    print(f"Source nodes: {[n.name for n in source_nodes]}")
+    print(f"Looking for target pattern: {target_config}")
+    
+    # List all MatMul nodes to help with debugging
+    matmul_nodes = [node for node in model.graph.node if node.op_type == allowed_op_type]
+    print(f"Found {len(matmul_nodes)} {allowed_op_type} nodes in model:")
+    for node in matmul_nodes[:10]:  # Show only first 10 to avoid overwhelming output
+        print(f"  - Name: {node.name}, Outputs: {node.output}")
+    
+    return None
+
 def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     model_path = config["model_name"]
     output_path = config.get("output_path", model_path.replace(".onnx", "_injected.onnx"))
@@ -146,7 +208,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=False,
+                fp16=True,
                 is_signed=True
             )
         elif llama_config['precision'] == 'int4':
@@ -154,7 +216,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=False,
+                fp16=True,
                 is_signed=False,
             )    
         elif llama_config['precision'] == 'float16':
@@ -162,7 +224,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=False,
+                fp16=True
             )
             
     else:
@@ -171,7 +233,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=True,
+                fp16=False,
                 is_signed=True
             )
         elif llama_config['precision'] == 'int4':
@@ -179,7 +241,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=True,
+                fp16=False,
                 is_signed=False,
             )    
         elif llama_config['precision'] == 'float16':
@@ -187,7 +249,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
-                fp32=True,
+                fp32=True
             )
 
     original_nodes = list(model.graph.node)
@@ -251,13 +313,15 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
             orig_init = next(i for i in model.graph.initializer if i.name == inp)
             cloned_init = numpy_helper.from_array(numpy_helper.to_array(orig_init), name=f"{inp}{clone_suffix}")
             model.graph.initializer.append(cloned_init)
-    
-    model = shape_inference.infer_shapes(model)
     model.opset_import[0].version = 18
     if llama_config['precision'] == 'float16':
         existing_opsets = {op.domain: op.version for op in model.opset_import}
+        print('existing_opsets', existing_opsets)
         if 'custom.perturb' not in existing_opsets:
             model.opset_import.append(helper.make_opsetid('custom.perturb', 1))
+        model = shape_inference.infer_shapes(model)
+    else:
+        model = shape_inference.infer_shapes(model)
     onnx.save(model, output_path)
     print(f"Modified model saved to {output_path}")
     return output_path
@@ -273,6 +337,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     if path_info is None:
         raise ValueError(f"Could not find a weight path from '{config['weight_tensor']}' to target '{config['target_layer']}'.")
     src_node, target_node, full_path, external_inputs = path_info
+    print(full_path)
 
     clone_suffix = "_fault_injected"
     original_target_output = target_node.output[0]
@@ -294,6 +359,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
+                fp16=True,
                 is_signed=True
             )
         elif llama_config['precision'] == 'int4':
@@ -301,13 +367,15 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
                 bit_position=bit_position,
+                fp16=True,
                 is_signed=False
             )
         elif llama_config['precision'] == 'float16':
             injection_nodes = create_fp16_fault_injection(
                 input_name=src_node.output[0],
                 output_name=tensor_map[src_node.output[0]],
-                bit_position=bit_position
+                bit_position=bit_position,
+                fp32=False
             )
     else:
         if llama_config['precision'] == 'int8':
@@ -392,12 +460,15 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
             cloned_init = numpy_helper.from_array(numpy_helper.to_array(orig_init), name=f"{inp}{clone_suffix}")
             model.graph.initializer.append(cloned_init)
     
-    model = shape_inference.infer_shapes(model)
+    
     model.opset_import[0].version = 18
     if llama_config['precision'] == 'float16':
         existing_opsets = {op.domain: op.version for op in model.opset_import}
         if 'custom.perturb' not in existing_opsets:
             model.opset_import.append(helper.make_opsetid('custom.perturb', 1))
+        model = shape_inference.infer_shapes(model)
+    else:
+        model = shape_inference.infer_shapes(model)
     onnx.save(model, output_path)
     print(f"Modified WEIGHT injection model saved to {output_path}")
     return output_path
@@ -440,12 +511,19 @@ def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=Non
     else:
         if llama_config['fp16']:
             value = delta_init(is_float32=False)
+            injection_nodes = create_random_fault_injection(
+                output_name=target_output,
+                random_value=value,
+                fp16=True
+            )
         else:
             value = delta_init(is_float32=True)
-        injection_nodes = create_random_fault_injection(
-            output_name=target_output,
-            random_value=value
-        )
+            injection_nodes = create_random_fault_injection(
+                output_name=target_output,
+                random_value=value,
+                fp16=False
+            )
+        
     
     new_nodes = []
     faulty_output = f"{target_output}_faulty"
@@ -483,18 +561,6 @@ def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=Non
 
 def load_mmlu_dataset():
     try:
-        dev_dataset = load_dataset("cais/mmlu", "miscellaneous", split="dev")
-        dev_dataset = dev_dataset.filter(lambda x: x['subject'] in ["high_school_biology",
-    "high_school_chemistry",
-    "high_school_computer_science",
-    "high_school_european_history",
-    "high_school_geography",
-    "high_school_government_and_politics",
-    "high_school_macroeconomics",
-    "high_school_mathematics",
-    "high_school_microeconomics",
-    "high_school_physics",
-    "high_school_psychology"])
         test_dataset = load_dataset("cais/mmlu", "all", split="test")
         test_dataset = test_dataset.filter(lambda x: x['subject'] in EVALUATION_SUBJECTS)
         dev_dataset = load_dataset("cais/mmlu", "all", split="dev")

@@ -4,11 +4,11 @@ from typing import List
 from onnxruntime_extensions import onnx_op, PyCustomOpDef, get_library_path as _get_library_path
 import struct
 
-def create_quantized_fault_injection(input_name, output_name, bit_position, fp32=False, is_signed=True ):
+def create_quantized_fault_injection(input_name, output_name, bit_position, fp16=False, is_signed=True ):
     nodes = []
     suffix = "_inject"
     int_type = TensorProto.INT8 if is_signed else TensorProto.UINT8
-    prec = TensorProto.FLOAT if fp32 else TensorProto.FLOAT16
+    prec = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
     
     # Cast directly to the integer type for bit manipulation
     nodes.append(helper.make_node(
@@ -691,9 +691,10 @@ def create_input16_mask(matmul_output="y", masked_output="y_masked", block_lengt
     
     return nodes
 
-def create_random_fault_injection(output_name: str, random_value: float):
+def create_random_fault_injection(output_name: str, random_value: float, fp16: bool=True):
     nodes = []
     suffix = "_random"
+    prec = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
     
     nodes.append(helper.make_node(
         'Shape',
@@ -759,7 +760,7 @@ def create_random_fault_injection(output_name: str, random_value: float):
         outputs=['fault_value' + suffix],
         value=helper.make_tensor(
             name='fault_value_tensor' + suffix,
-            data_type=TensorProto.FLOAT,
+            data_type=prec,
             dims=[1],
             vals=[random_value]
         )
@@ -922,7 +923,7 @@ def create_random_bitflip_injection(output_name: str, bit_position: int):
     
     return nodes
 
-def create_fp16_fault_injection(input_name, output_name, bit_position, fp32=True):
+def create_fp16_fault_injection(input_name, output_name, bit_position, fp32=False):
     nodes = []
     suffix = ""  # No suffix needed for the integrated operator
     
