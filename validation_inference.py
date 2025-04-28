@@ -22,33 +22,7 @@ from datetime import datetime
 import gc
 import csv
 import json
-# Create a simple debugging function to print Add node details
-def print_add_node_details(model, add_node):
-    print("\n===== ADD NODE DETAILS =====")
-    print(f"ADD OPERATION: {add_node.name}")
-    print("INPUT (receives)")
-    print(f"A\nname: {add_node.input[0]}")
-    print(f"B\nname: {add_node.input[1]}")
-    print("OUTPUT")
-    print(f"C\nname: {add_node.output[0]}")
-    
-    # Find consumers of the Add output
-    output_tensor_name = add_node.output[0]
-    consumers = []
-    for node in model.graph.node:
-        if output_tensor_name in node.input:
-            consumers.append(node)
-    
-    print("\n===== ADD OUTPUT CONSUMERS =====")
-    if consumers:
-        print(f"The output tensor '{output_tensor_name}' is consumed by {len(consumers)} nodes:")
-        for i, consumer in enumerate(consumers):
-            print(f"{i+1}. Node: {consumer.name} (Op type: {consumer.op_type})")
-            input_idx = list(consumer.input).index(output_tensor_name)
-            print(f"   Used as input #{input_idx} out of {len(consumer.input)} inputs")
-    else:
-        print(f"The output tensor '{output_tensor_name}' is not consumed by any nodes in the graph.")
-        print("This means it might be a final output or unused in the graph.")
+
 EVALUATION_SUBJECTS = [
     "abstract_algebra",
     "anatomy",
@@ -80,63 +54,7 @@ EVALUATION_SUBJECTS = [
     "high_school_physics",
     "high_school_psychology"
 ]
-def analyze_path(model, start_pattern, target_config):
-    # Build consumer map lazily and only explore relevant paths
-    consumers = defaultdict(list)
-    allowed_op_type = target_config.split("/")[-1]
-    
-    # Only find source nodes matching the pattern
-    source_nodes = [n for n in model.graph.node if any(start_pattern in output for output in n.output)]
-    
-    for src_node in source_nodes:
-        # Perform iterative DFS rather than BFS for better memory locality
-        visited = set()
-        stack = [(src_node.output[0], [src_node])]
-        
-        while stack:
-            current_tensor, path = stack.pop()
-            if current_tensor in visited:
-                continue
-            visited.add(current_tensor)
-            
-            # Lazily build consumer map only for tensors we're visiting
-            if current_tensor not in consumers:
-                for node in model.graph.node:
-                    if current_tensor in node.input:
-                        consumers[current_tensor].append(node)
-            
-            # Check if any consumer is our target
-            for consumer in consumers[current_tensor]:
-                if consumer.op_type == allowed_op_type and target_config in consumer.name:
-                    # Target found, collect external inputs and return
-                    external_inputs = []
-                    for node in path + [consumer]:
-                        if node.op_type == 'Mul':
-                            external_inputs.extend(
-                                inp for inp in node.input if inp not in {n.output[0] for n in path + [consumer]}
-                            )
-                    return (src_node, consumer, path + [consumer], external_inputs)
-                
-                # If not target, add to stack for further exploration
-                new_path = path + [consumer]
-                for out in consumer.output:
-                    stack.append((out, new_path))
-    
-    return None
 
-def print_node_info(node, description="Node"):
-    """Print detailed information about a node's inputs and outputs"""
-    print(f"\n{description}: {node.name}")
-    print("OPERATION:", node.op_type)
-    print("INPUTS (receives):")
-    for i, input_name in enumerate(node.input):
-        print(f"  Input {chr(65+i)}")
-        print(f"  name: {input_name}")
-    print("OUTPUTS:")
-    for i, output_name in enumerate(node.output):
-        print(f"  Output {chr(67+i)}")
-        print(f"  name: {output_name}")
-    print()
 def analyze_path(model, start_pattern, target_config):
     # Build consumer map lazily and only explore relevant paths
     consumers = defaultdict(list)
@@ -321,7 +239,6 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
                 f"{original_target_output}_final" if inp == original_target_output else inp
                 for inp in node.input
             ]
-    print_node_info(add_node, description="Add Node")
     model.graph.ClearField('node')
     model.graph.node.extend(new_nodes)
     
@@ -333,7 +250,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
             None  # Shape will be inferred
         )
     ])
-    print_add_node_details(model, add_node)
+
 
 
     # Clone any external initializers if needed
@@ -472,7 +389,6 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
                 f"{original_target_output}_final" if inp == original_target_output else inp
                 for inp in node.input
             ]
-    print_node_info(add_node, description="Add Node")
     model.graph.ClearField("node")
     model.graph.node.extend(new_nodes)
     model.graph.output.extend([
@@ -482,7 +398,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
             None  # Shape will be inferred
         )
     ])
-    print_add_node_details(model, add_node)
+
     
     for inp in external_inputs:
         if inp in [i.name for i in model.graph.initializer]:
