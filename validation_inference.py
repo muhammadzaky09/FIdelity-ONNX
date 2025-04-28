@@ -63,7 +63,7 @@ def analyze_path(model, start_pattern, target_config):
     import re
     target_name = target_config.split("/")[-1]
     allowed_op_type = re.sub(r'_\d+$', '', target_name)  # Remove trailing _number
-    print(f"Looking for operation type: {allowed_op_type} in target: {target_config}")
+   
     
     # Only find source nodes matching the pattern
     source_nodes = [n for n in model.graph.node if any(start_pattern in output for output in n.output)]
@@ -103,16 +103,6 @@ def analyze_path(model, start_pattern, target_config):
                 for out in consumer.output:
                     stack.append((out, new_path))
     
-    # Add debugging info
-    print(f"No path found. Checked {len(source_nodes)} source nodes.")
-    print(f"Source nodes: {[n.name for n in source_nodes]}")
-    print(f"Looking for target pattern: {target_config}")
-    
-    # List all MatMul nodes to help with debugging
-    matmul_nodes = [node for node in model.graph.node if node.op_type == allowed_op_type]
-    print(f"Found {len(matmul_nodes)} {allowed_op_type} nodes in model:")
-    for node in matmul_nodes[:10]:  # Show only first 10 to avoid overwhelming output
-        print(f"  - Name: {node.name}, Outputs: {node.output}")
     
     return None
 
@@ -123,7 +113,6 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     model = onnx.load(model_path)
     model = patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax"))
     path_info = analyze_path(model, config["input_tensor"], config["target_layer"])
-    print("Path info:", path_info)
     if path_info is None:
         raise ValueError("Could not find a path matching the given patterns.")
     src_node, target_node, full_path, external_inputs = path_info
@@ -253,7 +242,6 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
 
 
 
-    # Clone any external initializers if needed
     for inp in external_inputs:
         if inp in [i.name for i in model.graph.initializer]:
             orig_init = next(i for i in model.graph.initializer if i.name == inp)
@@ -278,7 +266,6 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     model = onnx.load(model_path)
     model = patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax"))
     model = move_initializers_to_constant_for_matmul(model)
-    print("Output path:", output_path)
     path_info = analyze_path(model, config["weight_tensor"], config["target_layer"])
     if path_info is None:
         raise ValueError(f"Could not find a weight path from '{config['weight_tensor']}' to target '{config['target_layer']}'.")
@@ -399,7 +386,6 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
         )
     ])
 
-    
     for inp in external_inputs:
         if inp in [i.name for i in model.graph.initializer]:
             orig_init = next(i for i in model.graph.initializer if i.name == inp)
@@ -416,9 +402,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     else:
         model = shape_inference.infer_shapes(model)
     onnx.save(model, output_path)
-    print(f"Modified WEIGHT injection model saved to {output_path}")
     return output_path
-
 
 def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=None):
     model_path = config["model_name"]
@@ -791,7 +775,6 @@ class Llama:
                     target_layer_output = outputs['target_layer_output']
                     print("target: ",np.count_nonzero(target_layer_output))
                     print("norm:", np.linalg.norm(target_layer_output))
-                    print(target_layer_output)
             else:
                 outputs = self.decoder.decode(inputs, idx)
 
@@ -1062,10 +1045,11 @@ if __name__ == "__main__":
         'max': 300,
         'poolsize': 44,
         'fp16': True,
-        'precision': 'int8',
-        'onnxdir': 'alpaca',
-        'layer_files': 'injection_llm',
+        'precision': 'float16',
+        'onnxdir': 'alpaca16',
+        'layer_files': 'injection_llm16',
     }
+    print(llama_config)
 
     # Create Llama instance
     persistent_llama = Llama(onnxdir=llama_config['onnxdir'], config=llama_config)
