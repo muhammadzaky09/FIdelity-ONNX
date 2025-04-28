@@ -57,7 +57,7 @@ def parse_matmul_nodes(model_path: str):
                     "target_layer": target_layer,
                     "input_tensor": input_tensor,
                     "weight_tensor": weight_const_name or weight_tensor,
-                    "decoder_path": model_path
+                    "model_name": model_path
                 }
                 matmul_nodes.append(matmul_info)
                 
