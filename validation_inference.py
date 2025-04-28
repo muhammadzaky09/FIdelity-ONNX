@@ -22,7 +22,33 @@ from datetime import datetime
 import gc
 import csv
 import json
-
+# Create a simple debugging function to print Add node details
+def print_add_node_details(model, add_node):
+    print("\n===== ADD NODE DETAILS =====")
+    print(f"ADD OPERATION: {add_node.name}")
+    print("INPUT (receives)")
+    print(f"A\nname: {add_node.input[0]}")
+    print(f"B\nname: {add_node.input[1]}")
+    print("OUTPUT")
+    print(f"C\nname: {add_node.output[0]}")
+    
+    # Find consumers of the Add output
+    output_tensor_name = add_node.output[0]
+    consumers = []
+    for node in model.graph.node:
+        if output_tensor_name in node.input:
+            consumers.append(node)
+    
+    print("\n===== ADD OUTPUT CONSUMERS =====")
+    if consumers:
+        print(f"The output tensor '{output_tensor_name}' is consumed by {len(consumers)} nodes:")
+        for i, consumer in enumerate(consumers):
+            print(f"{i+1}. Node: {consumer.name} (Op type: {consumer.op_type})")
+            input_idx = list(consumer.input).index(output_tensor_name)
+            print(f"   Used as input #{input_idx} out of {len(consumer.input)} inputs")
+    else:
+        print(f"The output tensor '{output_tensor_name}' is not consumed by any nodes in the graph.")
+        print("This means it might be a final output or unused in the graph.")
 EVALUATION_SUBJECTS = [
     "abstract_algebra",
     "anatomy",
@@ -299,6 +325,7 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     model.graph.ClearField('node')
     model.graph.node.extend(new_nodes)
     
+    
     model.graph.output.extend([
         helper.make_tensor_value_info(
             'target_layer_output',
@@ -306,6 +333,8 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
             None  # Shape will be inferred
         )
     ])
+    print_add_node_details(model, add_node)
+
 
     # Clone any external initializers if needed
     for inp in external_inputs:
@@ -453,6 +482,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
             None  # Shape will be inferred
         )
     ])
+    print_add_node_details(model, add_node)
     
     for inp in external_inputs:
         if inp in [i.name for i in model.graph.initializer]:
