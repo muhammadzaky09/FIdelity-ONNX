@@ -1047,7 +1047,7 @@ if __name__ == "__main__":
         'fp16': True,
         'precision': 'float16',
         'onnxdir': 'alpaca16',
-        'layer_files': 'injection_llm16',
+        'layer_files': 'injection_llmfp16',
     }
     print(llama_config)
 
