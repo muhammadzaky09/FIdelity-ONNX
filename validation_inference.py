@@ -225,9 +225,6 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
         name='target_layer_output_identity'
     )
     new_nodes.append(target_output_node)
-    print("target node:", target_output_node)
-    print(f"Original target: {original_target_output}")
-    print(f"Cloned target: {cloned_target_output}")
     add_node = helper.make_node(
         'Add',
         [original_target_output, cloned_target_output],
@@ -283,7 +280,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     if path_info is None:
         raise ValueError(f"Could not find a weight path from '{config['weight_tensor']}' to target '{config['target_layer']}'.")
     src_node, target_node, full_path, external_inputs = path_info
-    print(full_path)
+
 
     clone_suffix = "_fault_injected"
     original_target_output = target_node.output[0]
@@ -1061,9 +1058,9 @@ if __name__ == "__main__":
         'max': 300,
         'poolsize': 44,
         'fp16': True,
-        'precision': 'float16',
-        'onnxdir': 'alpaca16',
-        'layer_files': 'injection_llmfp16',
+        'precision': 'int8',
+        'onnxdir': 'decoders/7B16',
+        'layer_files': 'injection_llm',
     }
     print(llama_config)
 
