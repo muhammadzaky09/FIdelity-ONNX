@@ -55,69 +55,56 @@ EVALUATION_SUBJECTS = [
     "high_school_psychology"
 ]
 
-def analyze_path(model, start_pattern, target_config):
+def analyze_paths(model, target_layer, input_tensor_name, weight_tensor_name=None):
+    src_node = None
+    weight_node = None
     target_node = None
+    
     for node in model.graph.node:
-        if any(output == target_config for output in node.output):
+        if input_tensor_name in node.output:
+            src_node = node
+        if weight_tensor_name and weight_tensor_name in node.output:
+            weight_node = node
+        if node.name == target_layer:
             target_node = node
-            print(f"Found target node by output tensor: {target_config}")
-            break
-        elif (node.name == target_config or 
-             (node.name and target_config in node.name) or 
-             (target_config.isdigit() and node.name and node.name.endswith(target_config))):
-            target_node = node
-            print(f"Found target node by name: {node.name}")
-            break
-
+    
+    if not src_node or not target_node:
+        return None, None
+        
     consumers = defaultdict(list)
     for node in model.graph.node:
         for inp in node.input:
             consumers[inp].append(node)
     
-    source_nodes = []
-    for node in model.graph.node:
+    input_path = find_forward_path(src_node, target_node, consumers)
+    weight_path = None
+    if weight_node:
+        weight_path = find_forward_path(weight_node, target_node, consumers)
+        
+    return input_path, weight_path
+def find_forward_path(start_node, end_node, consumers):
+    visited = set()  
+    queue = deque([(start_node, [start_node])])
+    
+    while queue:
+        node, path = queue.popleft()
+        
+        # Check if we've reached the target node by identity
+        if node is end_node:  # Use identity comparison, not name
+            return path
+            
+        node_id = node.name if node.name else id(node)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        
         for output in node.output:
-            if start_pattern == output or start_pattern in output:
-                source_nodes.append(node)
-                break
+            for consumer in consumers.get(output, []):
+                if all(consumer is not p for p in path):  # Avoid cycles
+                    queue.append((consumer, path + [consumer]))
     
-    if not source_nodes:
-        print(f"Could not find any source nodes with output matching '{start_pattern}'")
-        return None
-
-    
-    for src_node in source_nodes:
-        src_id = src_node.name if src_node.name else f"unnamed (output: {src_node.output[0]})"
-        print(f"Searching for path from {src_id}")
-        
-        visited = set()
-        stack = [(src_node.output[0], [src_node])]
-        max_depth = 20 
-        
-        while stack:
-            current_tensor, path = stack.pop()
-            if current_tensor in visited:
-                continue
-            visited.add(current_tensor)
-            
-            if len(path) > max_depth:
-                continue
-            
-            for consumer in consumers.get(current_tensor, []):
-                if consumer == target_node:
-                    external_inputs = []
-                    for node in path + [consumer]:
-                        if node.op_type == 'Mul':
-                            external_inputs.extend(
-                                inp for inp in node.input if inp not in {n.output[0] for n in path + [consumer]}
-                            )
-                    return (src_node, consumer, path + [consumer], external_inputs)
-                
-                new_path = path + [consumer]
-                for out in consumer.output:
-                    stack.append((out, new_path))
-    
-    return None
+    # If we get here, no path was found
+    return [start_node]  # Return just the start node if no path to end
 
 def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     model_path = config["model_name"]
@@ -125,11 +112,15 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
 
     model = onnx.load(model_path)
     model = patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax"))
-    path_info = analyze_path(model, config["input_tensor"], config["target_layer"])
-    print("Path info:", path_info)
-    if path_info is None:
+    input_path, _ = analyze_paths(model, config["target_layer"], 
+                              config["input_tensor"], 
+                              config["weight_tensor"])
+    
+    if not input_path:
         raise ValueError("Could not find a path matching the given patterns.")
-    src_node, target_node, full_path, external_inputs = path_info
+    src_node = input_path[0]
+    target_node = input_path[-1]
+    
 
     clone_suffix = "_fault_injected"
     original_target_output = target_node.output[0]
@@ -138,9 +129,10 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     cloned_nodes = []
   
     tensor_map[src_node.output[0]] = f"{src_node.output[0]}{clone_suffix}"
-    for node in full_path[1:]:
+    for node in input_path[1:]:
         new_inputs = [tensor_map.get(inp, inp) for inp in node.input]
         new_outputs = [f"{out}{clone_suffix}" for out in node.output]
+        
         cloned_node = helper.make_node( node.op_type,
                                        new_inputs,new_outputs,
                                        name=f"{node.name}{clone_suffix}",
@@ -250,12 +242,6 @@ def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
         )
     ])
 
-    # Clone any external initializers if needed
-    for inp in external_inputs:
-        if inp in [i.name for i in model.graph.initializer]:
-            orig_init = next(i for i in model.graph.initializer if i.name == inp)
-            cloned_init = numpy_helper.from_array(numpy_helper.to_array(orig_init), name=f"{inp}{clone_suffix}")
-            model.graph.initializer.append(cloned_init)
     model.opset_import[0].version = 18
     if llama_config['precision'] == 'float16':
         existing_opsets = {op.domain: op.version for op in model.opset_import}
@@ -274,12 +260,15 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     output_path = config.get("output_path", model_path.replace(".onnx", "_injected.onnx"))
     model = onnx.load(model_path)
     model = patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax"))
-    model = move_initializers_to_constant_for_matmul(model)
     print("Output path:", output_path)
-    path_info = analyze_path(model, config["weight_tensor"], config["target_layer"])
-    if path_info is None:
+    _, weight_path =  analyze_paths(model, config["target_layer"], 
+                              config["input_tensor"], 
+                              config["weight_tensor"])
+    if not weight_path:
         raise ValueError(f"Could not find a weight path from '{config['weight_tensor']}' to target '{config['target_layer']}'.")
-    src_node, target_node, full_path, external_inputs = path_info
+    
+    src_node = weight_path[0]
+    target_node = weight_path[-1]
 
 
     clone_suffix = "_fault_injected"
@@ -288,8 +277,9 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     # Clone the chain of nodes from the weight source to the target.
     tensor_map = {}
     cloned_nodes = []
+    
     tensor_map[src_node.output[0]] = f"{src_node.output[0]}{clone_suffix}"
-    for node in full_path[1:]:
+    for node in weight_path[1:]:
         new_inputs = [tensor_map.get(inp, inp) for inp in node.input]
         new_outputs = [f"{out}{clone_suffix}" for out in node.output]
         cloned_node = helper.make_node(node.op_type,new_inputs, new_outputs, name=f"{node.name}{clone_suffix}",**{attr.name: onnx.helper.get_attribute_value(attr) for attr in node.attribute})
@@ -396,13 +386,6 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
         )
     ])
     
-    for inp in external_inputs:
-        if inp in [i.name for i in model.graph.initializer]:
-            orig_init = next(i for i in model.graph.initializer if i.name == inp)
-            cloned_init = numpy_helper.from_array(numpy_helper.to_array(orig_init), name=f"{inp}{clone_suffix}")
-            model.graph.initializer.append(cloned_init)
-    
-    
     model.opset_import[0].version = 18
     if llama_config['precision'] == 'float16':
         existing_opsets = {op.domain: op.version for op in model.opset_import}
@@ -500,7 +483,6 @@ def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=Non
     onnx.save(model, output_path)
     print(f"Modified random fault injection model saved to {output_path}")
     return output_path
-
 
 def load_mmlu_dataset():
     try:
