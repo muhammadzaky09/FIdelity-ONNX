@@ -383,7 +383,14 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
         outputs=['target_layer_output'],
         name='target_layer_output_identity'
     )
+    indices_output_node = helper.make_node(
+        'Identity',
+        inputs=['indices_int64_inject'],  # Adjust suffix as needed
+        outputs=['fault_injection_indices'],  # This becomes available to retrieve
+            name='fault_indices_output'
+    )
     new_nodes.append(target_output_node)
+    new_nodes.append(indices_output_node)
     add_node = helper.make_node(
         "Add",
         inputs=[original_target_output, cloned_target_output],
@@ -404,7 +411,12 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
         helper.make_tensor_value_info(
             'target_layer_output',
             TensorProto.FLOAT16 if llama_config['fp16'] else TensorProto.FLOAT,
-            None  # Shape will be inferred
+            None  
+            ),
+        helper.make_tensor_value_info(
+            'fault_injection_indices',
+            TensorProto.INT64,
+            None  
         )
     ])
     
@@ -604,6 +616,7 @@ class Llama:
         self.pastvalues = [None for i in range(self.DECODER_COUNT)]
         
         self.faulty_decoders = {}
+        self.fault_indices = None
 
         pool.check()
 
@@ -788,10 +801,11 @@ class Llama:
             if idx == self.fault_config['target_decoder_idx']:
                 outputs = self._faulty_decode(inputs, idx)
                 print('wawawawaw target token, inject fault')
-                if 'target_layer_output' in outputs:
+                if 'target_layer_output' or 'fault_injection_indices' in outputs:
                     target_layer_output = outputs['target_layer_output']
                     print("target: ",np.count_nonzero(target_layer_output))
                     print("norm:", np.linalg.norm(target_layer_output))
+                    fault_indices = outputs['fault_injection_indices']
             else:
                 outputs = self.decoder.decode(inputs, idx)
 
@@ -800,7 +814,7 @@ class Llama:
             self.pastvalues[idx] = outputs['past_value']
 
         hidden = self.decoder.norm_head(hidden)
-        return hidden, target_layer_output
+        return hidden, target_layer_output, fault_indices
 
     def _faulty_decode(self, inputs: dict, idx: int):
         from llama.memory_pool import OrtWrapper
@@ -926,7 +940,7 @@ class Llama:
             # At the target token generation, use decode_faulty
             if token_count == self.fault_config['target_token_idx']:
                 logger.debug(f"Injecting fault at token position {token_count}")
-                logits, layer_output = self.decode_faulty(next_token)
+                logits, layer_output, fault_indices = self.decode_faulty(next_token)
                 faulty_logits = logits[:, -1, :].copy()
                 if layer_output is not None:
                     # Get non-zero indices
@@ -963,7 +977,7 @@ class Llama:
         if self.fault_config['target_token_idx'] < len(generated_tokens):
             faulty_token = generated_tokens[self.fault_config['target_token_idx']]
                 
-        return full_response, faulty_token, target_nonzeros, faulty_logits
+        return full_response, faulty_token, target_nonzeros, faulty_logits, fault_indices
 
     # Add MMLU-specific methods
     def process_mmlu_example(self, test_example, dev_examples, num_shots=1):
@@ -1006,7 +1020,7 @@ class Llama:
     def process_mmlu_example_faulty(self, test_example, dev_examples, prompt, num_shots=1):
         """Run faulty MMLU inference and extract results"""
         # Get faulty output
-        faulty_output, faulty_token, target_nonzeros, faulty_logits = self.sample_faulty(prompt)
+        faulty_output, faulty_token, target_nonzeros, faulty_logits, fault_indices = self.sample_faulty(prompt)
         
         # Extract answer
         predicted_letter = extract_answer(faulty_output, prompt)
@@ -1028,7 +1042,8 @@ class Llama:
             'is_correct': (predicted_letter == correct_letter) if predicted_letter else False,
             'faulty_token': faulty_token,
             'target_nonzeros': target_nonzeros,
-            'faulty_logits': faulty_logits
+            'faulty_logits': faulty_logits,
+            'fault_indices': fault_indices
         }
 
 def extract_decoder_idx(path):
@@ -1084,7 +1099,7 @@ if __name__ == "__main__":
             'Target_Decoder_Idx', 'Target_Token_Idx', 'Experiment',
             'Golden_Answer', 'Faulty_Answer', 'Correct_Answer',
             'Golden_Correct', 'Faulty_Correct', 'Answer_Changed',
-            'Correctness_Changed', 'Golden_Raw_Output', 'Faulty_Raw_Output', 'Golden_Token', 'Faulty_Token','Target_Nonzeros','Logits_Equal'
+            'Correctness_Changed', 'Golden_Raw_Output', 'Faulty_Raw_Output', 'Golden_Token', 'Faulty_Token','Target_Nonzeros','Logits_Equal','Fault_Indices'
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         if not file_exists:
@@ -1107,7 +1122,7 @@ if __name__ == "__main__":
         logger.info(f"{'='*40}")
         
         # For each fault model
-        for fault_model in ['INPUT','WEIGHT','INPUT16','WEIGHT16']: 
+        for fault_model in ['WEIGHT']: 
             for bit_position in range(8):
                 curr_subject = subjects[subject_index % len(subjects)]
                 subjects_used.add(curr_subject)
@@ -1224,7 +1239,8 @@ if __name__ == "__main__":
                             'Golden_Token': golden_result['first_token'],
                             'Faulty_Token': faulty_result['faulty_token'],
                             'Target_Nonzeros': str(faulty_result['target_nonzeros']) if faulty_result.get('target_nonzeros') is not None else "None",
-                            'Logits_Equal': logits_equal
+                            'Logits_Equal': logits_equal,
+                            'Fault_Indices': str(faulty_result['fault_indices']) if faulty_result.get('fault_indices') is not None else "None"
                         })
                 
                 # Clean up the faulty decoder
