@@ -40,11 +40,8 @@ from axes_parser import patch_reduce_ops, move_initializers_to_constant_for_matm
 #     return None
 
 def analyze_paths(model, target_layer, input_tensor_name, weight_tensor_name=None):
-    src_node = None
-    weight_node = None
-    target_node = None
-
-    # Locate source, weight, and target nodes
+    # 1) find the three key nodes
+    src_node = weight_node = target_node = None
     for node in model.graph.node:
         if input_tensor_name in node.output:
             src_node = node
@@ -56,64 +53,64 @@ def analyze_paths(model, target_layer, input_tensor_name, weight_tensor_name=Non
     if not src_node or not target_node:
         return None, None
 
-    # Build producer and consumer maps
+    # 2) build producer + consumer maps
     producers = {}
     consumers = defaultdict(list)
     for node in model.graph.node:
-        for output in node.output:
-            producers[output] = node
+        for out in node.output:
+            producers[out] = node
         for inp in node.input:
             consumers[inp].append(node)
 
-    # Find all paths (full subgraph) from src_node → target_node
-    input_path = identify_subgraph(src_node, target_node, consumers, producers)
-    weight_path = None
+    # 3) extract *raw* subgraphs
+    raw_input = _extract_subgraph(src_node, target_node, consumers, producers)
+    raw_weight = None
     if weight_node:
-        weight_path = identify_subgraph(weight_node, target_node, consumers, producers)
+        raw_weight = _extract_subgraph(weight_node, target_node, consumers, producers)
 
-    return input_path, weight_path
+    # 4) now sort each subgraph by the original model order (which is topological)
+    node_order = {id(n): i for i,n in enumerate(model.graph.node)}
+    def topo_sort(raw):
+        if not raw: 
+            return None
+        ids = {id(n) for n in raw}
+        # keep only those in the raw set, in model‑decl order
+        return [n for n in model.graph.node if id(n) in ids]
 
-def identify_subgraph(start_node, end_node, consumers, producers):
-    def forward_reachable(start):
-        visited_ids = set()
-        reachable = []
-        queue = deque([start])
-        while queue:
-            node = queue.popleft()
-            nid = id(node)
-            if nid in visited_ids:
-                continue
-            visited_ids.add(nid)
-            reachable.append(node)
-            for out in node.output:
-                for consumer in consumers.get(out, []):
-                    queue.append(consumer)
-        return reachable, visited_ids
+    return topo_sort(raw_input), topo_sort(raw_weight)
 
-    def backward_reachable(end):
-        visited_ids = set()
-        reachable = []
-        queue = deque([end])
-        while queue:
-            node = queue.popleft()
-            nid = id(node)
-            if nid in visited_ids:
-                continue
-            visited_ids.add(nid)
-            reachable.append(node)
-            for inp in node.input:
-                producer = producers.get(inp)
-                if producer:
-                    queue.append(producer)
-        return reachable, visited_ids
 
-    fwd_nodes, fwd_ids = forward_reachable(start_node)
-    bwd_nodes, bwd_ids = backward_reachable(end_node)
+def _extract_subgraph(start_node, end_node, consumers, producers):
+    # backward: find everything that can reach end_node
+    back_ids = set()
+    q = deque([end_node])
+    while q:
+        n = q.popleft()
+        nid = id(n)
+        if nid in back_ids:
+            continue
+        back_ids.add(nid)
+        for inp in n.input:
+            parent = producers.get(inp)
+            if parent:
+                q.append(parent)
 
-    # intersection of ids gives the exact subgraph
-    common_ids = fwd_ids & bwd_ids
-    subgraph = [node for node in fwd_nodes if id(node) in common_ids]
-    return subgraph
+    # forward: from start, only follow into back_ids
+    sub_ids = set()
+    sub_nodes = []
+    q = deque([start_node])
+    while q:
+        n = q.popleft()
+        nid = id(n)
+        if nid in sub_ids or nid not in back_ids:
+            continue
+        sub_ids.add(nid)
+        sub_nodes.append(n)
+        for out in n.output:
+            for c in consumers.get(out, []):
+                q.append(c)
+
+    return sub_nodes
 
 
 def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
@@ -496,16 +493,16 @@ def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=Non
 
 if __name__ == "__main__":
     config = {
-    "input_tensor": "/self_attn/q_proj/Round_2_output_0",
-    "target_layer": "/self_attn/MatMul",
-    "weight_tensor": "/self_attn/k_proj/Round_1_output_0",
+    "input_tensor": "/mlp/down_proj/Round_output_0",
+    "target_layer": "/mlp/down_proj/MatMul",
+    "weight_tensor": "/mlp/down_proj/Round_1_output_0",
     "model_name": "decoders/7B16/decoder-merge-8.onnx"
 }
     llama_config = {
         "fp16": True,
         "precision": "int8"
     }
-    fault_model = "WEIGHT"  # or "WEIGHT16"
+    fault_model = "INPUT"  # or "WEIGHT16"
     bit_position = 3
     modify_onnx_graph_input(config, llama_config, fault_model, bit_position)
     # modify_onnx_graph_weight(config, llama_config, fault_model, bit_position)

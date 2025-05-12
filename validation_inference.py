@@ -56,10 +56,8 @@ EVALUATION_SUBJECTS = [
 ]
 
 def analyze_paths(model, target_layer, input_tensor_name, weight_tensor_name=None):
-    src_node = None
-    weight_node = None
-    target_node = None
-    
+    # 1) find the three key nodes
+    src_node = weight_node = target_node = None
     for node in model.graph.node:
         if input_tensor_name in node.output:
             src_node = node
@@ -67,44 +65,68 @@ def analyze_paths(model, target_layer, input_tensor_name, weight_tensor_name=Non
             weight_node = node
         if node.name == target_layer:
             target_node = node
-    
+
     if not src_node or not target_node:
         return None, None
-        
+
+    # 2) build producer + consumer maps
+    producers = {}
     consumers = defaultdict(list)
     for node in model.graph.node:
+        for out in node.output:
+            producers[out] = node
         for inp in node.input:
             consumers[inp].append(node)
-    
-    input_path = find_forward_path(src_node, target_node, consumers)
-    weight_path = None
+
+    # 3) extract *raw* subgraphs
+    raw_input = _extract_subgraph(src_node, target_node, consumers, producers)
+    raw_weight = None
     if weight_node:
-        weight_path = find_forward_path(weight_node, target_node, consumers)
-        
-    return input_path, weight_path
-def find_forward_path(start_node, end_node, consumers):
-    visited = set()  
-    queue = deque([(start_node, [start_node])])
-    
-    while queue:
-        node, path = queue.popleft()
-        
-        # Check if we've reached the target node by identity
-        if node is end_node:  # Use identity comparison, not name
-            return path
-            
-        node_id = node.name if node.name else id(node)
-        if node_id in visited:
+        raw_weight = _extract_subgraph(weight_node, target_node, consumers, producers)
+
+    # 4) now sort each subgraph by the original model order (which is topological)
+    node_order = {id(n): i for i,n in enumerate(model.graph.node)}
+    def topo_sort(raw):
+        if not raw: 
+            return None
+        ids = {id(n) for n in raw}
+        # keep only those in the raw set, in model‑decl order
+        return [n for n in model.graph.node if id(n) in ids]
+
+    return topo_sort(raw_input), topo_sort(raw_weight)
+
+
+def _extract_subgraph(start_node, end_node, consumers, producers):
+    # backward: find everything that can reach end_node
+    back_ids = set()
+    q = deque([end_node])
+    while q:
+        n = q.popleft()
+        nid = id(n)
+        if nid in back_ids:
             continue
-        visited.add(node_id)
-        
-        for output in node.output:
-            for consumer in consumers.get(output, []):
-                if all(consumer is not p for p in path):  # Avoid cycles
-                    queue.append((consumer, path + [consumer]))
-    
-    # If we get here, no path was found
-    return [start_node]  # Return just the start node if no path to end
+        back_ids.add(nid)
+        for inp in n.input:
+            parent = producers.get(inp)
+            if parent:
+                q.append(parent)
+
+    # forward: from start, only follow into back_ids
+    sub_ids = set()
+    sub_nodes = []
+    q = deque([start_node])
+    while q:
+        n = q.popleft()
+        nid = id(n)
+        if nid in sub_ids or nid not in back_ids:
+            continue
+        sub_ids.add(nid)
+        sub_nodes.append(n)
+        for out in n.output:
+            for c in consumers.get(out, []):
+                q.append(c)
+
+    return sub_nodes
 
 def modify_onnx_graph_input(config, llama_config, fault_model, bit_position=3):
     model_path = config["model_name"]
