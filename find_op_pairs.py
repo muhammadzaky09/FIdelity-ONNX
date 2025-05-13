@@ -368,7 +368,14 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
         outputs=['target_layer_output'],
         name='target_layer_output_identity'
     )
+    indices_output_node = helper.make_node(
+        'Identity',
+        inputs=['indices_int64_inject'],  # Adjust suffix as needed
+        outputs=['fault_injection_indices'],  # This becomes available to retrieve
+            name='fault_indices_output'
+    )
     new_nodes.append(target_output_node)
+    new_nodes.append(indices_output_node)
     add_node = helper.make_node(
         "Add",
         inputs=[original_target_output, cloned_target_output],
@@ -389,7 +396,12 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
         helper.make_tensor_value_info(
             'target_layer_output',
             TensorProto.FLOAT16 if llama_config['fp16'] else TensorProto.FLOAT,
-            None  # Shape will be inferred
+            None  
+            ),
+        helper.make_tensor_value_info(
+            'fault_injection_indices',
+            TensorProto.INT64,
+            None  
         )
     ])
     
@@ -502,8 +514,8 @@ if __name__ == "__main__":
         "fp16": True,
         "precision": "int8"
     }
-    fault_model = "INPUT"  # or "WEIGHT16"
+    fault_model = "WEIGHT"  # or "WEIGHT16"
     bit_position = 3
-    modify_onnx_graph_input(config, llama_config, fault_model, bit_position)
-    # modify_onnx_graph_weight(config, llama_config, fault_model, bit_position)
+    # modify_onnx_graph_input(config, llama_config, fault_model, bit_position)
+    modify_onnx_graph_weight(config, llama_config, fault_model, bit_position)
     # modify_onnx_graph_random(config, llama_config, fault_model, bit_position)

@@ -4,70 +4,133 @@ from typing import List
 from onnxruntime_extensions import onnx_op, PyCustomOpDef, get_library_path as _get_library_path
 import struct
 
-def create_quantized_fault_injection(input_name, output_name, bit_position, fp16=False, is_signed=True ):
+def create_quantized_fault_injection(input_name, output_name, bit_position,
+                                     fp16=False, is_signed=True):
+    """
+    Dimension-agnostic bit-flip injection: flattens any rank-N tensor,
+    flips one random bit at `bit_position`, and reshapes back.
+    """
     nodes = []
-    suffix = "_inject"
-    int_type = TensorProto.INT8 if is_signed else TensorProto.UINT8
-    prec = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
-    
-    # Cast directly to the integer type for bit manipulation
+    suffix   = "_inject"
+    int_type = TensorProto.INT8   if is_signed else TensorProto.UINT8
+    prec     = TensorProto.FLOAT16 if fp16     else TensorProto.FLOAT
+
+    # 1) Cast original to int
     nodes.append(helper.make_node(
-        'Cast',
+        "Cast",
         inputs=[input_name],
-        outputs=['int_val' + suffix],
+        outputs=["int_val" + suffix],
         to=int_type
     ))
-    
-    # Get shape (we still need the shape for generating random indices)
+
+    # 2) Record original shape [d0, d1, ..., dN]
     nodes.append(helper.make_node(
-        'Shape',
+        "Shape",
         inputs=[input_name],
-        outputs=['runtime_shape' + suffix]
+        outputs=["orig_shape" + suffix]
     ))
 
-    # Cast shape to float for random calculations
+    # Create a constant tensor for the reduce axes
     nodes.append(helper.make_node(
-        'Cast',
-        inputs=['runtime_shape' + suffix],
-        outputs=['runtime_shape_float' + suffix],
+        "Constant",
+        inputs=[],
+        outputs=["reduce_axes" + suffix],
+        value=helper.make_tensor(
+            name="reduce_axes_tensor" + suffix,
+            data_type=TensorProto.INT64,
+            dims=[1],
+            vals=[0]
+        )
+    ))
+    
+    # 3) Compute flat size = product of all dims (with axes as input)
+    nodes.append(helper.make_node(
+        "ReduceProd",
+        inputs=["orig_shape" + suffix, "reduce_axes" + suffix],  # Add axes as input
+        outputs=["flat_size" + suffix],
+        keepdims=0  # keepdims can remain as an attribute
+    ))
+
+    # 4) Flatten to 1-D
+    nodes.append(helper.make_node(
+        "Flatten",
+        inputs=[input_name],
+        outputs=["flat_val" + suffix],
+        axis=0
+    ))
+
+    # Create a constant tensor for the axes
+    nodes.append(helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["unsqueeze_axes" + suffix],
+        value=helper.make_tensor(
+            name="unsqueeze_axes_tensor" + suffix,
+            data_type=TensorProto.INT64,
+            dims=[1],
+            vals=[0]
+        )
+    ))
+    
+    # 5) Unsqueeze flat_size → [flat_size] (compatible with opset 13+)
+    nodes.append(helper.make_node(
+        "Unsqueeze",
+        inputs=["flat_size" + suffix, "unsqueeze_axes" + suffix],  # Add axes as input
+        outputs=["flat_shape" + suffix]
+        # Remove the "axes" attribute
+    ))
+
+    # 6) Create zero vector of length flat_size
+    nodes.append(helper.make_node(
+        "ConstantOfShape",
+        inputs=["flat_shape" + suffix],
+        outputs=["zero_flat" + suffix],
+        value=helper.make_tensor(
+            name="zero_val" + suffix,
+            data_type=int_type,
+            dims=[1],
+            vals=[0]
+        )
+    ))
+
+    # 7) Draw one random index in [0, flat_size)
+    nodes.append(helper.make_node(
+        "Cast",
+        inputs=["flat_size" + suffix],
+        outputs=["flat_size_f" + suffix],
         to=TensorProto.FLOAT
     ))
-    
-    # Random index generation (same as before)
     nodes.append(helper.make_node(
-        'RandomUniformLike',
-        inputs=['runtime_shape_float' + suffix],
-        outputs=['random_vals' + suffix],
-        high=1.0,
-        low=0.0
+        "RandomUniformLike",
+        inputs=["flat_size_f" + suffix],
+        outputs=["rand_flat" + suffix],
+        low=0.0, high=1.0, seed=1.0
     ))
-    
     nodes.append(helper.make_node(
-        'Mul',
-        inputs=['random_vals' + suffix, 'runtime_shape_float' + suffix],
-        outputs=['scaled_indices' + suffix]
+        "Mul",
+        inputs=["rand_flat" + suffix, "flat_size_f" + suffix],
+        outputs=["scaled_flat" + suffix]
     ))
-    
     nodes.append(helper.make_node(
-        'Floor',
-        inputs=['scaled_indices' + suffix],
-        outputs=['floored_indices' + suffix]
+        "Floor",
+        inputs=["scaled_flat" + suffix],
+        outputs=["floor_flat" + suffix]
     ))
-    
     nodes.append(helper.make_node(
-        'Cast',
-        inputs=['floored_indices' + suffix],
-        outputs=['indices_int64' + suffix],
+        "Cast",
+        inputs=["floor_flat" + suffix],
+        outputs=["idx_flat" + suffix],
         to=TensorProto.INT64
     ))
-    
-    # Reshape indices for ScatterND
+
+    # 8) Convert to [[idx_flat]] for ScatterND
+    # Create constants for the axes
     nodes.append(helper.make_node(
-        'Constant',
+        "Constant",
         inputs=[],
-        outputs=['unsqueeze_axes' + suffix],
+        outputs=["axes_0" + suffix],
         value=helper.make_tensor(
-            name='unsqueeze_axes_tensor' + suffix,
+            name="axes_0_tensor" + suffix,
             data_type=TensorProto.INT64,
             dims=[1],
             vals=[0]
@@ -75,80 +138,97 @@ def create_quantized_fault_injection(input_name, output_name, bit_position, fp16
     ))
     
     nodes.append(helper.make_node(
-        'Unsqueeze',
-        inputs=['indices_int64' + suffix, 'unsqueeze_axes' + suffix],
-        outputs=['indices_int64_unsqueezed' + suffix]
+        "Constant",
+        inputs=[],
+        outputs=["axes_1" + suffix],
+        value=helper.make_tensor(
+            name="axes_1_tensor" + suffix,
+            data_type=TensorProto.INT64,
+            dims=[1],
+            vals=[1]
+        )
     ))
     
-    # Create bitmask
+    # First unsqueeze with axes as input
     nodes.append(helper.make_node(
-        'Constant',
+        "Unsqueeze",
+        inputs=["idx_flat" + suffix, "axes_0" + suffix],
+        outputs=["idx_ud" + suffix]
+        # No axes attribute
+    ))
+    
+    # Second unsqueeze with axes as input
+    nodes.append(helper.make_node(
+        "Unsqueeze",
+        inputs=["idx_ud" + suffix, "axes_1" + suffix],
+        outputs=["idx_sc" + suffix]
+        # No axes attribute
+    ))
+
+    # 9) Build the bitmask to flip a single bit
+    nodes.append(helper.make_node(
+        "Constant",
         inputs=[],
-        outputs=['bitmask' + suffix],
+        outputs=["bitmask" + suffix],
         value=helper.make_tensor(
-            name='bitmask_val' + suffix,
+            name="bitmask_val" + suffix,
             data_type=int_type,
-            dims=[1],            
+            dims=[1],
             vals=[1 << bit_position]
         )
     ))
-    
-    # Create zero tensor
+
+    # 10) Scatter the bitmask into our zero vector
     nodes.append(helper.make_node(
-        'ConstantOfShape',
-        inputs=['runtime_shape' + suffix],
-        outputs=['zero_base' + suffix],
-        value=helper.make_tensor(
-            name='zero_value' + suffix,
-            data_type=int_type,
-            dims=[1],
-            vals=[0]
-        )
+        "ScatterND",
+        inputs=["zero_flat"  + suffix,
+                "idx_sc"     + suffix,
+                "bitmask"    + suffix],
+        outputs=["mask_flat" + suffix]
     ))
-    
-    # Place bitmask at random position
+
+    # 11) Reshape mask_flat → mask_nd of original shape
     nodes.append(helper.make_node(
-        'ScatterND',
-        inputs=['zero_base' + suffix, 'indices_int64_unsqueezed' + suffix, 'bitmask' + suffix],
-        outputs=['bit_mask' + suffix]
+        "Reshape",
+        inputs=["mask_flat"  + suffix,
+                "orig_shape" + suffix],
+        outputs=["mask"       + suffix]
     ))
-    
-    # Apply bit flip with XOR
+
+    # 12) Flip the bit with XOR
     nodes.append(helper.make_node(
-        'BitwiseXor',
-        inputs=['int_val' + suffix, 'bit_mask' + suffix],
-        outputs=['flipped_int' + suffix]
+        "BitwiseXor",
+        inputs=["int_val" + suffix, "mask" + suffix],
+        outputs=["flipped_int" + suffix]
     ))
-    
-    # Calculate perturbation
+
+    # 13) Compute perturbation = flipped - original
     nodes.append(helper.make_node(
-        'Cast',
-        inputs=['flipped_int' + suffix],
-        outputs=['flipped_int32' + suffix],
+        "Cast",
+        inputs=["flipped_int" + suffix],
+        outputs=["flipped_i32" + suffix],
         to=TensorProto.INT32
     ))
-    
     nodes.append(helper.make_node(
-        'Cast',
-        inputs=['int_val' + suffix],
-        outputs=['int_val32' + suffix],
+        "Cast",
+        inputs=["int_val"       + suffix],
+        outputs=["orig_i32"      + suffix],
         to=TensorProto.INT32
     ))
-    
     nodes.append(helper.make_node(
-        'Sub',
-        inputs=['flipped_int32' + suffix, 'int_val32' + suffix],
-        outputs=['perturbation_int32' + suffix]
+        "Sub",
+        inputs=["flipped_i32" + suffix, "orig_i32" + suffix],
+        outputs=["perturb_i32" + suffix]
     ))
-    
-    # Cast perturbation to output format
+
+    # 14) Cast perturbation back to float16/float
     nodes.append(helper.make_node(
-        'Cast',
-        inputs=['perturbation_int32' + suffix],
+        "Cast",
+        inputs=["perturb_i32" + suffix],
         outputs=[output_name],
         to=prec
     ))
-    
+
     return nodes
 
 def create_weight16_mask(matmul_output="y", masked_output="y_masked", block_length=4, fp16=True):

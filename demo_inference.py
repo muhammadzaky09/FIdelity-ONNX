@@ -23,37 +23,6 @@ import gc
 import csv
 import json
 
-EVALUATION_SUBJECTS = [
-    "abstract_algebra",
-    "anatomy",
-    "astronomy",
-    "business_ethics",
-    "clinical_knowledge",
-    "college_biology",
-    "college_chemistry",
-    "college_computer_science",
-    "college_mathematics",
-    "college_medicine",
-    "college_physics",
-    "computer_security",
-    "conceptual_physics",
-    "econometrics",
-    "electrical_engineering",
-    "elementary_mathematics",
-    "formal_logic",
-    "global_facts",
-    "high_school_biology",
-    "high_school_chemistry",
-    "high_school_computer_science",
-    "high_school_geography",
-    "high_school_government_and_politics",
-    "high_school_macroeconomics",
-    "high_school_mathematics",
-    "high_school_microeconomics",
-    "high_school_physics",
-    "high_school_psychology"
-]
-
 def analyze_paths(model, target_layer, input_tensor_name, weight_tensor_name=None):
     # 1) find the three key nodes
     src_node = weight_node = target_node = None
@@ -384,7 +353,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     )
     indices_output_node = helper.make_node(
         'Identity',
-        inputs=['mask_inject'],  # Adjust suffix as needed
+        inputs=['indices_int64_inject'],  # Adjust suffix as needed
         outputs=['fault_injection_indices'],  # This becomes available to retrieve
             name='fault_indices_output'
     )
@@ -414,7 +383,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
             ),
         helper.make_tensor_value_info(
             'fault_injection_indices',
-            TensorProto.INT8,
+            TensorProto.INT64,
             None  
         )
     ])
@@ -516,59 +485,6 @@ def modify_onnx_graph_random(config, llama_config, fault_model, bit_position=Non
     onnx.save(model, output_path)
     print(f"Modified random fault injection model saved to {output_path}")
     return output_path
-
-def load_mmlu_dataset():
-    try:
-        test_dataset = load_dataset("cais/mmlu", "all", split="test")
-        test_dataset = test_dataset.filter(lambda x: x['subject'] in EVALUATION_SUBJECTS)
-        dev_dataset = load_dataset("cais/mmlu", "all", split="dev")
-        dev_dataset = dev_dataset.filter(lambda x: x['subject'] in EVALUATION_SUBJECTS)
-        dev_list = [ex for ex in dev_dataset]
-        test_list = [ex for ex in test_dataset]
-        subjects = sorted(list(set(ex['subject'] for ex in test_list)))
-        logger.info(f"Found {len(subjects)} subjects in MMLU dataset")
-        
-        subject_to_examples = {}
-        for subject in subjects:
-            subject_exs = [ex for ex in test_list if ex['subject'] == subject]
-            subject_to_examples[subject] = subject_exs
-        
-        total_examples = sum(len(exs) for exs in subject_to_examples.values())
-        logger.info(f"Loaded {total_examples} examples total across {len(subjects)} subjects")
-        return dev_list, subject_to_examples, subjects
-        
-    except Exception as e:
-        logger.error(f"Error loading MMLU dataset: {e}")
-        return None, None, None
-
-def create_few_shot_prompt(dev_examples, test_example, num_shots=5):
-    subject = test_example['subject']
-    subject_examples = [ex for ex in dev_examples if ex['subject'] == subject]
-    random.seed(42)
-    shot_examples = random.sample(subject_examples, num_shots)
-    prompt = ""
-    
-    for example in shot_examples:
-        question = example['question']
-        choices = example['choices']
-        answer_idx = example['answer']
-        correct_letter = chr(65 + answer_idx) 
-        
-        prompt += f"Question: {question}\n"
-        prompt += f"A. {choices[0]}\n"
-        prompt += f"B. {choices[1]}\n"
-        prompt += f"C. {choices[2]}\n"
-        prompt += f"D. {choices[3]}\n"
-        prompt += f"Answer: {correct_letter}\n\n"
-    
-    prompt += f"Question: {test_example['question']}\n"
-    prompt += f"A. {test_example['choices'][0]}\n"
-    prompt += f"B. {test_example['choices'][1]}\n"
-    prompt += f"C. {test_example['choices'][2]}\n"
-    prompt += f"D. {test_example['choices'][3]}\n"
-    prompt += "Answer:"
-    
-    return prompt
 
 def extract_answer(full_response, prompt):
     model_answer = full_response[len(prompt):].strip()
@@ -805,7 +721,6 @@ class Llama:
                     print("target: ",np.count_nonzero(target_layer_output))
                     print("norm:", np.linalg.norm(target_layer_output))
                     fault_indices = outputs['fault_injection_indices']
-                    fault_indices = tuple(np.argwhere(fault_indices != 0))
             else:
                 outputs = self.decoder.decode(inputs, idx)
 
@@ -979,73 +894,6 @@ class Llama:
                 
         return full_response, faulty_token, target_nonzeros, faulty_logits, fault_indices
 
-    # Add MMLU-specific methods
-    def process_mmlu_example(self, test_example, dev_examples, num_shots=1):
-        """Run MMLU inference and extract results"""
-        # Create few-shot prompt
-        prompt = create_few_shot_prompt(dev_examples, test_example, num_shots)
-        
-        # Get golden output
-        golden_output, first_token, golden_logits = self.sample_golden(prompt)
-        
-        # Extract answer
-        predicted_letter = extract_answer(golden_output, prompt)
-        correct_letter = chr(65 + test_example['answer'])  # Convert 0,1,2,3 to A,B,C,D
-        
-        # Print results in a user-friendly way
-        logger.info("\nGOLDEN RUN RESULTS:")
-        logger.info("-" * 40)
-        logger.info(f"Question: {test_example['question']}")
-        logger.info(f"A: {test_example['choices'][0]}")
-        logger.info(f"B: {test_example['choices'][1]}")
-        logger.info(f"C: {test_example['choices'][2]}")
-        logger.info(f"D: {test_example['choices'][3]}")
-        logger.info(f"Correct Answer: {correct_letter}")
-        model_output = golden_output[len(prompt):].strip()
-        logger.info(f"Model Output: {model_output[:10]}{'...' if len(model_output) > 100 else ''}")
-        logger.info(f"Predicted: {predicted_letter or 'None'}")
-        logger.info(f"Correct? {'✓ YES' if predicted_letter == correct_letter else '✗ NO'}")
-        
-        return {
-            'prompt': prompt,
-            'output': golden_output, 
-            'model_output': model_output,  # Just the answer part without prompt
-            'predicted': predicted_letter,
-            'correct': correct_letter,
-            'is_correct': (predicted_letter == correct_letter) if predicted_letter else False,
-            'first_token': first_token,
-            'golden_logits': golden_logits
-        }
-    
-    def process_mmlu_example_faulty(self, test_example, dev_examples, prompt, num_shots=1):
-        """Run faulty MMLU inference and extract results"""
-        # Get faulty output
-        faulty_output, faulty_token, target_nonzeros, faulty_logits, fault_indices = self.sample_faulty(prompt)
-        
-        # Extract answer
-        predicted_letter = extract_answer(faulty_output, prompt)
-        correct_letter = chr(65 + test_example['answer'])
-        
-        # Print results in a user-friendly way
-        logger.info("\nFAULTY RUN RESULTS:")
-        logger.info("-" * 40)
-        model_output = faulty_output[len(prompt):].strip()
-        logger.info(f"Model Output: {model_output[:100]}{'...' if len(model_output) > 100 else ''}")
-        logger.info(f"Predicted: {predicted_letter or 'None'}")
-        logger.info(f"Correct? {'✓ YES' if predicted_letter == correct_letter else '✗ NO'}")
-        
-        return {
-            'output': faulty_output,
-            'model_output': model_output,
-            'predicted': predicted_letter,
-            'correct': correct_letter,
-            'is_correct': (predicted_letter == correct_letter) if predicted_letter else False,
-            'faulty_token': faulty_token,
-            'target_nonzeros': target_nonzeros,
-            'faulty_logits': faulty_logits,
-            'fault_indices': fault_indices
-        }
-
 def extract_decoder_idx(path):
     """Extract decoder index from filename"""
     import os
@@ -1061,210 +909,95 @@ def are_logits_equal(golden_logits, faulty_logits):
         return False
     return np.array_equal(golden_logits, faulty_logits)
 
-if __name__ == "__main__":
-    logger.info("Starting MMLU fault injection experiments...")
+def create_demo_prompt():
+    """Create the demonstration prompt with one-shot example"""
+    one_shot = "Find all c in Z_3 such that Z_3[x]/(x^2 + c) is a field.\nA. 0\nB. 1\nC. 2\nD. 3\nAnswer: B\n\n"
+    problem = "(1+i)^10 = \nA. 1\nB. i\nC. 32\nD. 32i"
+    return one_shot + problem
 
-    # Load dataset
-    dev_examples, subject_to_examples, subjects = load_mmlu_dataset()
-    if not dev_examples or not subject_to_examples or not subjects:
-        logger.error("Failed to load MMLU dataset. Exiting.")
-        exit(1)
-
+def run_fault_injection_demo():
+    """Single run fault injection demonstration"""
+    
     # Configure Llama model with low temperature for multiple choice
     llama_config = {
         'temperature': 0.001,
         'topp': 0.1,
-        'max': 50,
+        'max': 300,
         'poolsize': 44,
         'fp16': True,
         'precision': 'int8',
         'onnxdir': 'decoders/7B16',
         'layer_files': 'injection_llm',
     }
-    print(llama_config)
+    print("Starting LLM fault injection demo with config:", llama_config)
 
     # Create Llama instance
     persistent_llama = Llama(onnxdir=llama_config['onnxdir'], config=llama_config)
+    
+    # Fixed parameters for our demo
+    layer_file = "decoder-merge-0_down_proj.json"
+    fault_model = "WEIGHT"
+    bit_position = 4
+    
+    # Set a fixed random seed for reproducibility
+    random_seed = 42
+    persistent_llama.seed = random_seed
+    
+    # Load the layer configuration
+    config_path = os.path.join(llama_config['layer_files'], layer_file)
+    config = json.load(open(config_path))
+    
+    # Create the faulty model
+    print(f"\nCreating fault model with: {layer_file}, {fault_model}, bit position {bit_position}")
+    faulty_path = modify_onnx_graph_weight(config, llama_config, fault_model, bit_position)
+    
+    # Set up fault config
+    fault_config = {
+        'target_decoder_idx': 0,  # Fixed to decoder 0
+        'target_token_idx': 0,    # Inject at first token
+        'faulty_decoder_path': faulty_path
+    }
+    persistent_llama.fault_config = fault_config
+    
+    # Create our demo prompt
+    prompt = create_demo_prompt()
+    print(f"\nPrompt:\n{prompt}\n")
+    
+    # Golden run (normal execution)
+    print("\n=== Running Golden (Normal) Inference ===")
+    golden_output, first_token, golden_logits = persistent_llama.sample_golden(prompt)
+    
+    # Extract and print the model's answer
+    golden_answer = extract_answer(golden_output, prompt)
+    print(f"Golden Output: {golden_output[len(prompt):].strip()}")
+    print(f"Extracted Answer: {golden_answer}")
+    
+    # Faulty run (with injection)
+    print("\n=== Running Faulty Inference with Bit Flip ===")
+    faulty_output, faulty_token, target_nonzeros, faulty_logits, fault_indices = persistent_llama.sample_faulty(prompt)
+    
+    # Extract and print the model's answer
+    faulty_answer = extract_answer(faulty_output, prompt)
+    print(f"Faulty Output: {faulty_output[len(prompt):].strip()}")
+    print(f"Extracted Answer: {faulty_answer}")
+    print(f"Fault injected at indices: {fault_indices}")
+    
+    # Compare results
+    print("\n=== Results Comparison ===")
+    print(f"Golden answer: {golden_answer}")
+    print(f"Faulty answer: {faulty_answer}")
+    print(f"Answer changed: {'YES' if golden_answer != faulty_answer else 'NO'}")
+    
+    # Clean up the faulty decoder
+    if faulty_path in persistent_llama.faulty_decoders:
+        del persistent_llama.faulty_decoders[faulty_path]
+    if os.path.exists(faulty_path):
+        os.remove(faulty_path)
+    
+    # Run garbage collection
+    gc.collect()
+    
+    print("\nDemo completed successfully!")
 
-    # Create CSV file for results
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_filename = 'mmlu_fault_injection_results1.csv'
-    file_exists = os.path.isfile(csv_filename)
-    
-    with open(csv_filename, 'a' if file_exists else 'w', newline='') as csvfile:
-        fieldnames = [
-            'Timestamp', 'Subject', 
-            'Question','Option_A', 'Option_B', 'Option_C', 'Option_D','Examples',
-            'Layer_Config', 'Fault_Model', 'Bit_Position', 
-            'Target_Decoder_Idx', 'Target_Token_Idx', 'Experiment',
-            'Golden_Answer', 'Faulty_Answer', 'Correct_Answer',
-            'Golden_Correct', 'Faulty_Correct', 'Answer_Changed',
-            'Correctness_Changed', 'Golden_Raw_Output', 'Faulty_Raw_Output', 'Golden_Token', 'Faulty_Token','Target_Nonzeros','Logits_Equal','Fault_Indices'
-        ]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-
-    # Track subject usage to ensure all subjects are covered
-    subject_index = 0
-    subjects_used = set()
-    
-    
-    for layer_file in os.listdir(llama_config['layer_files']):
-        config_path = os.path.join(llama_config['layer_files'], layer_file)
-        # Skip directories
-        if os.path.isdir(config_path):
-            continue
-            
-        config = json.load(open(config_path))
-        logger.info(f"\n{'='*40}")
-        logger.info(f"Processing layer configuration: {layer_file}")
-        logger.info(f"{'='*40}")
-        
-        # For each fault model
-        for fault_model in ['WEIGHT']: 
-            for bit_position in range(8):
-                curr_subject = subjects[subject_index % len(subjects)]
-                subjects_used.add(curr_subject)
-                examples = subject_to_examples[curr_subject]
-                
-                
-                # Sort examples for determinism
-                examples.sort(key=lambda x: x['question'])
-                
-                # Use deterministic selection instead of random.sample
-                test_examples = [
-                    examples[0],  # Always use first example
-                    examples[min(1, len(examples)-1)]  # Second example or first again if only one exists
-                ]
-                
-                print(f"\n{'-'*40}")
-                print(f"Layer: {layer_file}, Fault Model: {fault_model}, Bit: {bit_position}")
-                print(f"Using subject: {curr_subject} (Subject {subject_index % len(subjects) + 1}/57)")
-                print(f"{'-'*40}")
-                
-                
-                random_seed = (bit_position * 1000 + 1)
-                persistent_llama.seed = random_seed
-                
-                
-                logger.info(f"Creating faulty decoder for {fault_model} on bit position {bit_position}...")
-                if fault_model in ['INPUT', 'INPUT16']:
-                    faulty_path = modify_onnx_graph_input(config, llama_config, fault_model, bit_position)
-                elif fault_model in ['WEIGHT', 'WEIGHT16']:
-                    faulty_path = modify_onnx_graph_weight(config, llama_config,fault_model, bit_position)
-                else:
-                    faulty_path = modify_onnx_graph_random(config, llama_config,fault_model, bit_position)
-                
-            
-                for experiment in range(1):
-                    test_example = test_examples[experiment]
-                    print(f"\nRunning experiment {experiment} with token position 0 (first token)")
-                    print(f"Question: {test_example['question']}")
-                    
-                    # Set up fault config (always target token 0)
-                    fault_config = {
-                        'target_decoder_idx': extract_decoder_idx(faulty_path),
-                        'target_token_idx': 0,  # Always target first token
-                        'faulty_decoder_path': faulty_path
-                    }
-                    persistent_llama.fault_config = fault_config
-                    
-                    # Run golden inference
-                    print("Running golden inference...")
-                    golden_result = persistent_llama.process_mmlu_example(test_example, dev_examples)
-                    
-                    
-                    
-                    # Run faulty inference
-                    print("Running faulty inference...")
-                    faulty_result = persistent_llama.process_mmlu_example_faulty(
-                        test_example, dev_examples, golden_result['prompt']
-                    )
-                    
-                    # In the main experiment loop, after running golden and faulty inference:
-                    if golden_result.get('golden_logits') is not None:
-                        logits_dir = 'logits_data'
-                        os.makedirs(logits_dir, exist_ok=True)
-                        
-                        # Save golden logits
-                        golden_logits_path = os.path.join(
-                            logits_dir, 
-                            f"golden_logits_layer{layer_file}_model{fault_model}_bit{bit_position}_exp{experiment}.npy"
-                        )
-                        np.save(golden_logits_path, golden_result['golden_logits'])
-                        
-                        # Save faulty logits
-                        if faulty_result.get('faulty_logits') is not None:
-                            faulty_logits_path = os.path.join(
-                                logits_dir, 
-                                f"faulty_logits_layer{layer_file}_model{fault_model}_bit{bit_position}_exp{experiment}.npy"
-                            )
-                            np.save(faulty_logits_path, faulty_result['faulty_logits'])
-                    # Analyze changes
-                    answer_changed = golden_result['predicted'] != faulty_result['predicted']
-                    correctness_changed = golden_result['is_correct'] != faulty_result['is_correct']
-                    logits_equal = are_logits_equal(golden_result.get('golden_logits'), faulty_result.get('faulty_logits'))
-                    # Display comparison
-                    print("\nCOMPARISON RESULTS:")
-                    print(f"{'='*40}")
-                    print(f"Golden Answer: {golden_result['predicted'] or 'None'}")
-                    print(f"Faulty Answer: {faulty_result['predicted'] or 'None'}")
-                    print(f"Correct Answer: {golden_result['correct']}")
-                    print(f"Answer Changed: {'YES' if answer_changed else 'NO'}")
-                    print(f"Correctness Changed: {'YES' if correctness_changed else 'NO'}")
-                    
-                    # Save results to CSV
-                    with open(csv_filename, 'a', newline='') as csvfile:
-                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                        writer.writerow({
-                            'Timestamp': datetime.now().isoformat(),
-                            'Subject': curr_subject,
-                            'Question': test_example['question'],
-                            'Option_A': test_example['choices'][0],
-                            'Option_B': test_example['choices'][1],
-                            'Option_C': test_example['choices'][2],
-                            'Option_D': test_example['choices'][3],
-                            'Examples': dev_examples,
-                            'Layer_Config': layer_file,
-                            'Fault_Model': fault_model,
-                            'Bit_Position': bit_position,
-                            'Target_Decoder_Idx': fault_config['target_decoder_idx'],
-                            'Target_Token_Idx': fault_config['target_token_idx'],
-                            'Experiment': experiment,
-                            'Golden_Answer': golden_result['predicted'] or 'None',
-                            'Faulty_Answer': faulty_result['predicted'] or 'None',
-                            'Correct_Answer': golden_result['correct'],
-                            'Golden_Correct': golden_result['is_correct'],
-                            'Faulty_Correct': faulty_result['is_correct'],
-                            'Answer_Changed': answer_changed,
-                            'Correctness_Changed': correctness_changed,
-                            'Golden_Raw_Output': golden_result['model_output'],
-                            'Faulty_Raw_Output': faulty_result['model_output'],
-                            'Golden_Token': golden_result['first_token'],
-                            'Faulty_Token': faulty_result['faulty_token'],
-                            'Target_Nonzeros': str(faulty_result['target_nonzeros']) if faulty_result.get('target_nonzeros') is not None else "None",
-                            'Logits_Equal': logits_equal,
-                            'Fault_Indices': str(faulty_result['fault_indices']) if faulty_result.get('fault_indices') is not None else "None"
-                        })
-                
-                # Clean up the faulty decoder
-                if faulty_path in persistent_llama.faulty_decoders:
-                    del persistent_llama.faulty_decoders[faulty_path]
-                if os.path.exists(faulty_path):
-                    os.remove(faulty_path)
-                
-                # Move to next subject and run garbage collection
-                subject_index += 1
-                gc.collect()
-
-    logger.info("\nExperiments completed.")
-    logger.info(f"Used {len(subjects_used)} out of {len(subjects)} subjects")
-    
-    if len(subjects_used) < len(subjects):
-        unused_subjects = set(subjects) - subjects_used
-        logger.info(f"Unused subjects: {', '.join(unused_subjects)}")
-    else:
-        logger.info("All MMLU subjects were used in the experiments.")
-    
-    logger.info(f"Results saved to {csv_filename}")
+if __name__ == "__main__":
+    run_fault_injection_demo()
