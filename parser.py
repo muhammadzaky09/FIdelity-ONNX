@@ -3,6 +3,7 @@ import json
 import os
 import glob
 from collections import deque, defaultdict
+import argparse
 
 def trace_tensor_to_round(graph, tensor_name):
     """
@@ -116,8 +117,14 @@ def parse_transformer_pairs(model_path: str):
             print("  weight_tensor:", weight_tensor)
 
 if __name__ == "__main__":
-    # Directory containing your ONNX files
-    onnx_dir = "decoders/7B16"
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Process ONNX files to identify transformer patterns.')
+    parser.add_argument('onnx_dir', type=str, help='Directory containing ONNX model files')
+    
+    args = parser.parse_args()
+    
+    # Use the provided directory
+    onnx_dir = args.onnx_dir
     # Use glob to find all .onnx files in the specified directory
     onnx_files = glob.glob(os.path.join(onnx_dir, "*.onnx"))
     print(f"Found {len(onnx_files)} ONNX files in directory '{onnx_dir}'")
