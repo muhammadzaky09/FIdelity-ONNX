@@ -353,7 +353,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
     )
     indices_output_node = helper.make_node(
         'Identity',
-        inputs=['indices_int64_inject'],  # Adjust suffix as needed
+        inputs=['mask_inject'],  # Adjust suffix as needed
         outputs=['fault_injection_indices'],  # This becomes available to retrieve
             name='fault_indices_output'
     )
@@ -383,7 +383,7 @@ def modify_onnx_graph_weight(config, llama_config, fault_model, bit_position=3):
             ),
         helper.make_tensor_value_info(
             'fault_injection_indices',
-            TensorProto.INT64,
+            TensorProto.INT8,
             None  
         )
     ])
@@ -721,6 +721,7 @@ class Llama:
                     print("target: ",np.count_nonzero(target_layer_output))
                     print("norm:", np.linalg.norm(target_layer_output))
                     fault_indices = outputs['fault_injection_indices']
+                    fault_indices = tuple(np.argwhere(fault_indices != 0))
             else:
                 outputs = self.decoder.decode(inputs, idx)
 
@@ -922,7 +923,7 @@ def run_fault_injection_demo():
     llama_config = {
         'temperature': 0.001,
         'topp': 0.1,
-        'max': 300,
+        'max': 20,
         'poolsize': 44,
         'fp16': True,
         'precision': 'int8',
