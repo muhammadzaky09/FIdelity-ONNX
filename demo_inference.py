@@ -912,7 +912,7 @@ def are_logits_equal(golden_logits, faulty_logits):
 
 def create_demo_prompt():
     """Create the demonstration prompt with one-shot example"""
-    one_shot = "Find all c in Z_3 such that Z_3[x]/(x^2 + c) is a field.\nA. 0\nB. 1\nC. 2\nD. 3\nAnswer: B\n\n"
+    one_shot = "\"Flash\" estimates of GDP are: \nA. subject to revision. \nB. do not require revision. \nC. available after a thirty-day lag. \nD. both A and C Answer: A"
     problem = "(1+i)^10 = \nA. 1\nB. i\nC. 32\nD. 32i"
     return one_shot + problem
 
@@ -923,7 +923,7 @@ def run_fault_injection_demo():
     llama_config = {
         'temperature': 0.001,
         'topp': 0.1,
-        'max': 20,
+        'max': 300,
         'poolsize': 44,
         'fp16': True,
         'precision': 'int8',
