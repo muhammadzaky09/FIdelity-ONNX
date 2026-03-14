@@ -34,33 +34,151 @@ and returns the output path.
 
 ## How it works
 
-### RANDOM / RANDOM_BITFLIP
+### Pre-processing
 
-1. Find target node by matching `target_layer` against node names or output tensor names.
-2. Detect whether the target output is FP16.
-3. Call the appropriate `inject_ops` function to build injection nodes.
-4. Insert injection nodes into the graph; re-wire all consumers of the original output
-   tensor to consume the faulty output instead.
-5. Add `rand_idx_inject` (INT64 scalar) as a new graph input — caller supplies it at
-   inference time to control which element is targeted.
+Before any injection, two patches are applied to the raw ONNX model:
 
-### INPUT / WEIGHT / INPUT16 / WEIGHT16
+- **`patch_reduce_ops`** — rewrites `ReduceMean`/`ReduceMax` nodes to pass `axes` as an
+  explicit input tensor instead of an attribute (required for opset 18 / some ORT versions).
+- **`move_initializers_to_constant_for_matmul`** — promotes weight initializers consumed
+  by `MatMul` into explicit `Constant` nodes so GraphSurgeon can traverse and clone them for fp16.
 
-1. Use `analyze_paths_gs` to find all nodes on the path from source (input or weight)
-   to target, plus the source output tensor name.
-2. Clone the path: each node is duplicated with renamed tensors so the original
-   forward pass is untouched.
-3. Call the appropriate `inject_ops` function to build the fault subgraph
-   (bit-flip + delta computation) on the cloned path's source tensor.
-4. The delta (faulty − clean) propagates through the cloned path and is added to
-   the original output: `faulty_out = original_out + delta`.
+The patched model is then loaded into a GraphSurgeon (`gs`) graph for manipulation.
 
-### Graph patching
+---
 
-- `patch_reduce_ops` rewrites opset-13 ReduceMean/ReduceMax to use explicit `axes`
-  inputs (required for some ORT versions).
-- `move_initializers_to_constant_for_matmul` converts weight initializers consumed by
-  MatMul into explicit `Constant` nodes so GraphSurgeon can handle them.
+### RANDOM / RANDOM_BITFLIP — direct output replacement
+
+**Target lookup**
+
+The target node is found by iterating `graph.nodes` and matching `config["target_layer"]`
+as either a **substring of `node.name`** or an **exact match of any output tensor name**.
+Only `MatMul`, `Conv`, `Linear`, and `FullyConnected` ops are considered.
+
+**Injection node conversion**
+
+`inject_ops` functions return plain `onnx.NodeProto` objects. These are converted to
+GraphSurgeon `gs.Node` objects using a shared `_get_var` helper that ensures every
+intermediate tensor is represented by exactly one `gs.Variable` object (avoiding
+"ghost variable" disconnection bugs). The faulty output variable inherits `dtype` and
+`shape` from the original output so GraphSurgeon can export a valid `ValueInfoProto`.
+
+**Graph insertion — position**
+
+Injection nodes are inserted immediately after the target node in `graph.nodes`:
+
+```
+graph.nodes.insert(target_idx + 1 + i, injection_node_i)
+```
+
+**Re-wiring consumers**
+
+After insertion, all downstream nodes that previously consumed `tgt_out` are updated
+to consume `faulty_tensor` instead:
+
+```
+for node in graph.nodes:
+    if node is NOT one of the injection nodes:   # avoid cycle
+        for i, inp in node.inputs:
+            if inp == tgt_out:
+                node.inputs[i] = faulty_tensor
+```
+
+Injection nodes themselves are **excluded** from re-wiring — they intentionally read
+from `tgt_out` as their source. Re-wiring them would create a cycle
+(`faulty → inject → faulty`).
+
+If `tgt_out` was a graph output (e.g. the MatMul is the final node), `graph.outputs`
+is also updated so `faulty_tensor` is reachable and `graph.cleanup()` does not prune
+the injection subgraph as dead code.
+
+**`rand_idx_inject` graph input**
+
+A new `gs.Variable("rand_idx_inject", dtype=int64, shape=[])` is appended to
+`graph.inputs` before any node conversion. This makes it a named feed-dict input that
+the caller must supply at inference time (e.g. `np.array(42, dtype=np.int64)`).
+
+---
+
+### INPUT / WEIGHT / INPUT16 / WEIGHT16 — delta propagation
+
+**Path discovery (`analyze_paths_gs`)**
+
+BFS from the source tensor's producer node to the target node, restricted to nodes
+reachable by both directions. Returns the ordered node list `[src_node, ..., tgt_node]`.
+
+Special case — **initializer weights**: if the weight tensor is a `gs.Constant`
+(no producer node), `analyze_paths_gs` sets `weight_node = target_node` to signal a
+single-element path. The clone loop then processes all nodes including `tgt_node`
+(not `path[1:]`), and the `gs.Constant` input is replaced with a new `gs.Variable`
+so the perturbed weight flows through.
+
+**Path cloning**
+
+A cloned copy of every node on the path is created with tensor names suffixed
+`_fault_injected`:
+
+```
+src_out       →  src_out_fault_injected
+intermediate  →  intermediate_fault_injected
+tgt_out       →  tgt_out_fault_injected
+```
+
+Inputs not on the path (e.g. biases, other activations) are shared unchanged between
+the original and cloned nodes. All created `gs.Variable` objects are stored in
+`created_tensors` to ensure uniqueness.
+
+**Fault injection subgraph**
+
+`create_quantized_fault_injection` (INT8) or `create_fp16_fault_injection` (FP16) is
+called on `(src_out, src_out_fault_injected)`. These nodes compute:
+
+```
+delta = perturbed(src_out) − src_out
+```
+
+producing `src_out_fault_injected` as a delta tensor with the same dtype as `src_out`.
+
+**Graph insertion — position**
+
+Injection nodes are inserted right after `src_node`:
+
+```
+src_idx = graph.nodes.index(src_node)
+graph.nodes.insert(src_idx + 1 + i, injection_node_i)    # fault nodes first
+graph.nodes.insert(src_idx + 1 + len(inj) + i, cloned_node_i)  # then cloned path
+```
+
+**Mask nodes (INPUT16 / WEIGHT16)**
+
+For the `16`-variant models, mask nodes from `create_input16_mask` /
+`create_weight16_mask` (or their Conv equivalents) are appended at the end of
+`graph.nodes` via `graph.nodes.append`. They zero out all but 16 contiguous elements
+of `tgt_out_fault_injected`, producing `tgt_out_fault_injected_masked`.
+
+**Final Add node**
+
+An `Add` node is appended:
+
+```
+faulty_out_final = Add(orig_tgt_out, tgt_out_fault_injected[_masked])
+```
+
+All downstream consumers of `orig_tgt_out` are then re-wired to `faulty_out_final`.
+The original forward pass (`orig_tgt_out`) remains intact; only consumers see the
+injected output.
+
+---
+
+### Finalisation
+
+```python
+graph.cleanup()    # remove dead nodes / tensors
+graph.toposort()   # ensure topological order for ORT
+model = gs.export_onnx(graph)
+# opset domains added as needed (custom.bitflip / ai.onnx.contrib)
+onnx.save(model, output_path)
+```
 
 ---
 
