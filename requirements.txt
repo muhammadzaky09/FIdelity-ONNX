@@ -1,8 +1,11 @@
-numpy
+numpy<2
 onnx==1.17.0
+onnx-graphsurgeon
 onnxruntime-gpu
 transformers
 sentencepiece
 loguru
 datasets
 onnxruntime_extensions
+psutil
+datasets

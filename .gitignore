@@ -2,10 +2,17 @@ decoders/
 input_llm/
 input_llm_fp16/
 onnx-bitflip/
-onnx-bitflip/include/
-onnx-bitflip/src/
 onnxruntime-dev/
 *.onnx
 csvs/
 fault_injection_results/
 injection_llm/
+*.pyc
+__pycache__/
+*.Zone.Identifier
+
+# onnx-cuda-bitflip build artifacts
+onnx-cuda-bitflip/build/
+onnx-cuda-bitflip/libonnxruntime.so.1
+onnx-cuda-bitflip/python/onnx_bitflip.so
+onnx-cuda-bitflip/python/onnx_bitflip_cuda.so

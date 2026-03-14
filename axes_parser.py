@@ -2,10 +2,6 @@ import onnx
 from onnx import helper, TensorProto, save_model, numpy_helper
 
 def patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax")):
-    """
-    Patch reduce operators in the model by removing the 'axes' attribute and adding a
-    Constant node for it. The constant node’s output is appended as an extra input to the reduce op.
-    """
     graph = model.graph
     const_nodes = []
     original_nodes = list(graph.node)  # capture the original node list
@@ -36,7 +32,6 @@ def patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax")):
                     )
                 )
                 const_nodes.append(const_node)
-                # Append the constant node's name as an input to the reduce node.
                 node.input.append(axes_const_name)
         new_nodes.append(node)
     
@@ -47,11 +42,6 @@ def patch_reduce_ops(model, reduce_ops=("ReduceMean", "ReduceMax")):
     return model
 
 def move_initializers_to_constant_for_matmul(model):
-    """
-    For every MatMul node in the model, if an input corresponds to an initializer,
-    create a Constant node for that initializer and update the node input accordingly.
-    Also, remove the replaced initializers from the initializer list and graph inputs.
-    """
     graph = model.graph
     # Build a dictionary for quick lookup of initializer values.
     init_dict = {init.name: init for init in graph.initializer}
@@ -99,16 +89,16 @@ def move_initializers_to_constant_for_matmul(model):
 
     return model
 
-if __name__ == "__main__":
-    original_model_path = "decoders/decoder-merge-20.onnx"       # your original model
-    updated_model_path = "decoders/decoder-merge-20-patched.onnx"   # destination for patched model
+# if __name__ == "__main__":
+#     original_model_path = "decoders/decoder-merge-20.onnx"       # your original model
+#     updated_model_path = "decoders/decoder-merge-20-patched.onnx"   # destination for patched model
 
-    # Load the model.
-    model = onnx.load(original_model_path)
-    # First, patch reduce operators.
-    model = patch_reduce_ops(model, reduce_ops=("ReduceMean","ReduceMax"))
-    # Next, move initializers to Constant nodes for MatMul.
-    model = move_initializers_to_constant_for_matmul(model)
+#     # Load the model.
+#     model = onnx.load(original_model_path)
+#     # First, patch reduce operators.
+#     model = patch_reduce_ops(model, reduce_ops=("ReduceMean","ReduceMax"))
+#     # Next, move initializers to Constant nodes for MatMul.
+#     model = move_initializers_to_constant_for_matmul(model)
 
-    save_model(model, updated_model_path)
-    print("Saved patched model as", updated_model_path)
+#     save_model(model, updated_model_path)
+#     print("Saved patched model as", updated_model_path)
