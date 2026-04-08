@@ -14,13 +14,15 @@ Fault injection framework for LLaMA-based ONNX models, implementing the
 ├── llm_inference.py      # End-to-end inference runner: golden + faulty, saves CSV
 ├── parser.py             # Parses any ONNX model → injection JSON configs (auto-detects quantized vs float)
 ├── axes_parser.py        # ONNX graph patches (ReduceMean/Max axes, initializer handling)
+├── configs/
+│   └── llama_7b.json     # Model spec: layer count, tensor names, file layout, KV cache dims
 ├── injection_llm/        # JSON layer configs produced by parser.py
 ├── decoders/
 │   ├── 7B16/             # INT8-quantised decoder ONNX files
 │   └── fp16/             # FP16 decoder ONNX files
 ├── llama/
 │   ├── onnx_bitflip.so   # Custom CUDA op: BitFlip (custom.bitflip domain)
-│   └── ...               # LLaMA runtime helpers (decoder, tokenizer, memory pool)
+│   └── ...               # Runtime helpers (decoder, tokenizer, memory pool)
 ├── setup.sh              # Environment setup (pip install + LD_LIBRARY_PATH)
 └── requirements.txt
 ```
@@ -63,14 +65,7 @@ per MatMul layer.  It auto-detects whether the model is quantized (INT8 — cont
 points accordingly.
 
 ```bash
-# INT8 quantised models
 python parser.py decoders/7B16/ --output_dir injection_llm
-
-# FP16 / FP32 float models
-python parser.py decoders/fp16/ --output_dir injection_llm
-
-# Target additional op types (e.g. also inject into Conv layers)
-python parser.py decoders/7B16/ --ops MatMul Conv --output_dir injection_llm
 ```
 
 Each run produces `injection_llm/<model_stem>_<layer>.json` files, for example:
@@ -95,17 +90,27 @@ Runs golden + faulty inference for every combination of
 `(layer config × fault model × bit position × prompt)` and saves results to CSV.
 
 ```bash
-# From a text file (one prompt per line)
 python llm_inference.py --prompts_file prompts.txt --onnxdir decoders/7B16
-
-# From a HuggingFace dataset
-python llm_inference.py \
-    --dataset cais/mmlu --dataset_split test --prompt_field question \
-    --onnxdir decoders/7B16 --precision int8 \
-    --max_tokens 50 --poolsize 20
 ```
 
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--prompts_file PATH` | — | `.txt` (one per line) or `.json` (list of strings) |
+| `--dataset NAME` | — | HuggingFace dataset name (mutually exclusive with `--prompts_file`) |
+| `--dataset_split` | `test` | Dataset split to load |
+| `--prompt_field` | `question` | Field used as the prompt string |
+| `--model_config PATH` | `configs/llama_7b.json` | Model spec JSON — copy and edit for a different model |
+| `--onnxdir` | `alpaca` | Directory containing decoder ONNX files |
+| `--layer_files` | `injection_llm` | Directory with layer injection JSON configs |
+| `--precision` | `int8` | `int8`, `float16`, or `float32` |
+| `--fp16` / `--no_fp16` | `--fp16` | Enable/disable FP16 inference |
+| `--temperature` | `0.0` | Sampling temperature |
+| `--topp` | `0.1` | Top-p nucleus sampling |
+| `--max_tokens` | `300` | Max tokens to generate per inference |
+| `--poolsize` | `44` | Memory pool size in GB |
+
 Results are appended to `fault_injection_results.csv`.
+See `docs/llm_inference.md` for full details.
 
 ---
 

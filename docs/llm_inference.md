@@ -37,6 +37,7 @@ python llm_inference.py --dataset cais/mmlu --dataset_split test \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
+| `--model_config PATH` | `configs/llama_7b.json` | Path to the model spec JSON (see below) |
 | `--onnxdir` | `alpaca` | Directory containing decoder ONNX files |
 | `--layer_files` | `injection_llm` | Directory with layer injection JSON configs |
 | `--precision` | `int8` | Model precision: `int8`, `float16`, `float32` |
@@ -45,6 +46,30 @@ python llm_inference.py --dataset cais/mmlu --dataset_split test \
 | `--topp` | `0.1` | Top-p nucleus sampling |
 | `--max_tokens` | `300` | Max tokens to generate per inference |
 | `--poolsize` | `44` | Memory pool size in GB for decoder sessions |
+
+#### Model spec JSON (`--model_config`)
+
+All model-architecture constants are externalised into a JSON file so the same
+script can drive any per-layer-split ONNX model.  The default
+`configs/llama_7b.json` encodes the LLaMA-7B values.
+
+| Field | Description |
+|-------|-------------|
+| `decoder_count` | Number of decoder layer ONNX files |
+| `eos_token_id` | Token ID that terminates generation |
+| `hidden_dim` | Hidden state width (used for shape assertion) |
+| `n_heads` / `head_dim` | Dimensions for the KV cache zero tensor |
+| `decoder_template` | Filename pattern, e.g. `"decoder-merge-{}.onnx"` |
+| `tokenizer_file` | Tokenizer filename inside `onnxdir` |
+| `embed_file` / `norm_file` / `head_file` | Separate ONNX filenames for embedding, norm, and LM head |
+| `input_names` | Dict mapping logical roles (`hidden`, `attn_mask`, `position_ids`, `past_key`, `past_value`) to actual ONNX input tensor names |
+| `output_names` | Dict mapping logical roles (`hidden`, `past_key`, `past_value`) to actual ONNX output tensor names |
+| `embed_input` / `embed_output` | Tensor names for the embedding ONNX |
+| `norm_input` / `norm_output` | Tensor names for the norm ONNX |
+| `head_input` / `head_output` | Tensor names for the LM head ONNX |
+
+To support a new model, copy `configs/llama_7b.json`, fill in the new values, and
+pass `--model_config configs/my_model.json`.
 
 ---
 
@@ -92,9 +117,14 @@ Results are appended to `fault_injection_results.csv`.
 
 ### `Llama`
 
+Constructed with `Llama(onnxdir, config, model_spec)` where `model_spec` is the
+loaded `configs/*.json` dict.  All architecture constants (layer count, tensor
+names, KV cache shape, etc.) are read from `model_spec` at init time with
+LLaMA-7B values as fallbacks.
+
 | Method | Description |
 |--------|-------------|
-| `decode(token)` | One full forward pass through all 32 decoders (clean) |
+| `decode(token)` | One full forward pass through all decoder layers (clean), using tensor names from `model_spec` |
 | `decode_faulty(token)` | Same, but substitutes the faulty session at `fault_config['target_decoder_idx']` |
 | `sample_golden(prompt)` | Full autoregressive generation, no fault injection |
 | `sample_faulty(prompt)` | Full autoregressive generation, fault injected at `target_token_idx` |
