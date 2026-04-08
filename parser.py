@@ -2,128 +2,157 @@ import onnx
 import json
 import os
 import glob
-from collections import deque, defaultdict
 import argparse
+from collections import deque
 
-def trace_tensor_to_round(graph, tensor_name):
 
+def trace_tensor_to_round(graph, tensor_name: str):
+    """
+    Walk backward from *tensor_name* through producer nodes until a Round node
+    is found.  Returns the output tensor name of that Round node, or None if
+    no Round node exists on any upstream path.
+    """
     producer_map = {}
     for node in graph.node:
         for output in node.output:
             producer_map[output] = node
-    
-    # BFS search to find Round node
+
     visited = set()
     queue = deque([tensor_name])
-    
+
     while queue:
-        current_tensor = queue.popleft()
-        if current_tensor in visited:
+        current = queue.popleft()
+        if current in visited:
             continue
-        visited.add(current_tensor)
-        
-        # Check if this tensor is produced by a Round node
-        if current_tensor in producer_map:
-            producer = producer_map[current_tensor]
+        visited.add(current)
+
+        if current in producer_map:
+            producer = producer_map[current]
             if producer.op_type == "Round":
-                return current_tensor
-            
-            # Not a Round node, add its inputs to the queue
-            for input_tensor in producer.input:
-                queue.append(input_tensor)
-    
-    # No path to a Round node found
+                return current
+            for inp in producer.input:
+                queue.append(inp)
+
     return None
 
-def parse_transformer_pairs(model_path: str):
+
+def resolve_starting_point(graph, tensor_name: str) -> str:
+    """
+    Return the best injection starting point for *tensor_name*.
+
+    Strategy (auto-detect, no precision flag needed):
+      1. Try tracing backward to a Round node (quantized / INT8 models).
+      2. If not found, use *tensor_name* directly (float FP16/FP32 models).
+    """
+    round_output = trace_tensor_to_round(graph, tensor_name)
+    return round_output if round_output is not None else tensor_name
+
+
+def parse_matmul_nodes(model_path: str, ops: list[str]):
+    """
+    Scan *model_path* for nodes whose op_type is in *ops* (default: MatMul).
+
+    For each node:
+    - target_layer  = node.name if set, else node.output[0] (output tensor name).
+    - input_tensor  = resolved starting point for node.input[0].
+    - weight_tensor = resolved starting point for node.input[1].
+
+    Returns a list of config dicts ready to be passed to modify_onnx_graph.
+    """
     model = onnx.load(model_path)
     graph = model.graph
 
-    # Update patterns to include all specified MatMul layers
-    patterns = {
-        'q_proj': '/self_attn/q_proj/MatMul',
-        'k_proj': '/self_attn/k_proj/MatMul',
-        'v_proj': '/self_attn/v_proj/MatMul',
-        'self_attn1': '/self_attn/MatMul',
-        'self_attn2': '/self_attn/MatMul_1',
-        'o_proj': '/self_attn/o_proj/MatMul',
-        'gate_proj': '/mlp/gate_proj/MatMul',
-        'up_proj': '/mlp/up_proj/MatMul',
-        'down_proj': '/mlp/down_proj/MatMul'
-    }
-    
-    # Build a dictionary for initializers
-    init_dict = {init.name: init for init in graph.initializer}
-    
-    # Build a map of consumers (tensor name -> list of nodes that consume it)
-    consumers = defaultdict(list)
+    # Set of initializer names for quick lookup
+    init_names = {init.name for init in graph.initializer}
+
+    results = []
+
     for node in graph.node:
-        for inp in node.input:
-            consumers[inp].append(node)
-    
-    for pattern_name, pattern in patterns.items():
-        print(f"\nProcessing pattern '{pattern_name}' ({pattern})")
-        
-        matmul_node = None
-        input_tensor = None
-        weight_tensor = None
-        
-        # Find the MatMul node for this pattern
-        for node in graph.node:
-            if node.op_type == "MatMul" and pattern in node.name:
-                matmul_node = node
-                break
-        
-        if not matmul_node:
-            print(f"Could not find MatMul node for pattern '{pattern_name}'")
+        if node.op_type not in ops:
             continue
-        
-        print(f"Found MatMul node: {matmul_node.name}")
-        print(f"MatMul inputs: {matmul_node.input}")
-        
-        # For each input to the MatMul node, trace back to a Round node
-        for i, inp in enumerate(matmul_node.input):
-            round_output = trace_tensor_to_round(graph, inp)
-            
-            if round_output:
-                if i == 0:  # First input is traditionally the activation input
-                    input_tensor = round_output
-                    print(f"Found input tensor from Round: {input_tensor}")
-                else:  # Second input is traditionally the weight
-                    weight_tensor = round_output
-                    print(f"Found weight tensor from Round: {weight_tensor}")
-        
-        # Save info to JSON if both tensors were found
-        if input_tensor and weight_tensor:
-            info = {
-                "input_tensor": input_tensor,
-                "target_layer": matmul_node.name,
-                "weight_tensor": weight_tensor,
-                "model_name": model_path
-            }
-            decoder_name = os.path.basename(model_path).replace('.onnx', '')
-            json_filename = f'injection_llm/{decoder_name}_{pattern_name}.json'
-            os.makedirs('injection_llm', exist_ok=True)
-            with open(json_filename, 'w') as f:
-                json.dump(info, f, indent=4)
-            print(f"Saved JSON for pattern '{pattern_name}' as {json_filename}")
-        else:
-            print(f"Could not find all tensors from Round nodes for pattern '{pattern_name}':")
-            print("  input_tensor:", input_tensor)
-            print("  weight_tensor:", weight_tensor)
+
+        # target_layer: prefer node name; fall back to first output tensor name
+        target_layer = node.name if node.name else (node.output[0] if node.output else None)
+        if target_layer is None:
+            continue
+
+        input0 = node.input[0] if len(node.input) > 0 else None
+        input1 = node.input[1] if len(node.input) > 1 else None
+
+        if not input0 or not input1:
+            continue
+
+        input_tensor  = resolve_starting_point(graph, input0)
+        # Initializer weights have no producer node; resolve_starting_point
+        # will just return the name as-is (correct behaviour for graph.py).
+        weight_tensor = resolve_starting_point(graph, input1)
+
+        results.append({
+            "model_name":     model_path,
+            "target_layer":   target_layer,
+            "input_tensor":   input_tensor,
+            "weight_tensor":  weight_tensor,
+        })
+
+        print(f"  [{node.op_type}] {target_layer}")
+        print(f"    input_tensor  : {input_tensor}")
+        print(f"    weight_tensor : {weight_tensor}")
+
+    return results
+
+
+def save_configs(configs: list[dict], output_dir: str):
+    """Write one JSON file per config entry."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    for i, cfg in enumerate(configs):
+        model_stem = os.path.basename(cfg["model_name"]).replace(".onnx", "")
+        safe_layer = cfg["target_layer"].replace("/", "_").replace("\\", "_")
+        filename   = f"{model_stem}_{safe_layer}.json"
+        path       = os.path.join(output_dir, filename)
+
+        with open(path, "w") as f:
+            json.dump(cfg, f, indent=4)
+
+        print(f"  Saved {path}")
+
 
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser(description='Process ONNX files to identify transformer patterns.')
-    parser.add_argument('onnx_dir', type=str, help='Directory containing ONNX model files')
-    
+    parser = argparse.ArgumentParser(
+        description=(
+            "Parse ONNX files and generate one JSON injection config per MatMul "
+            "(or other op) node.  Automatically detects quantized vs float models "
+            "by tracing inputs backward to Round nodes."
+        )
+    )
+    parser.add_argument(
+        "onnx_dir",
+        help="Directory containing .onnx files to parse.",
+    )
+    parser.add_argument(
+        "--output_dir", "-o",
+        default="injection_configs",
+        help="Directory where JSON configs are written (default: injection_configs).",
+    )
+    parser.add_argument(
+        "--ops",
+        nargs="+",
+        default=["MatMul"],
+        help="Op types to target (default: MatMul).  Example: --ops MatMul Conv",
+    )
     args = parser.parse_args()
-    
-    onnx_dir = args.onnx_dir
-  
-    onnx_files = glob.glob(os.path.join(onnx_dir, "*.onnx"))
-    print(f"Found {len(onnx_files)} ONNX files in directory '{onnx_dir}'")
-    
+
+    onnx_files = sorted(glob.glob(os.path.join(args.onnx_dir, "*.onnx")))
+    if not onnx_files:
+        print(f"No .onnx files found in '{args.onnx_dir}'")
+        raise SystemExit(1)
+
+    print(f"Found {len(onnx_files)} ONNX file(s) in '{args.onnx_dir}'")
+    total = 0
     for model_path in onnx_files:
         print(f"\nProcessing {model_path}")
-        parse_transformer_pairs(model_path)
+        configs = parse_matmul_nodes(model_path, ops=args.ops)
+        save_configs(configs, args.output_dir)
+        total += len(configs)
+
+    print(f"\nDone. Wrote {total} config file(s) to '{args.output_dir}'")

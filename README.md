@@ -12,10 +12,9 @@ Fault injection framework for LLaMA-based ONNX models, implementing the
 ├── graph.py              # Injects fault nodes into an ONNX file
 ├── inject_ops.py         # Building blocks: ONNX subgraph constructors per fault model
 ├── llm_inference.py      # End-to-end inference runner: golden + faulty, saves CSV
-├── parser.py             # Parses INT8 decoder ONNX → injection JSON configs
-├── parser_fp16.py        # Parses FP16 decoder ONNX → injection JSON configs
+├── parser.py             # Parses any ONNX model → injection JSON configs (auto-detects quantized vs float)
 ├── axes_parser.py        # ONNX graph patches (ReduceMean/Max axes, initializer handling)
-├── injection_llm/        # JSON layer configs produced by parser.py / parser_fp16.py
+├── injection_llm/        # JSON layer configs produced by parser.py
 ├── decoders/
 │   ├── 7B16/             # INT8-quantised decoder ONNX files
 │   └── fp16/             # FP16 decoder ONNX files
@@ -58,19 +57,25 @@ Expected filename pattern: `decoder-merge-{idx}.onnx`
 
 ### 3. Parse layer configs
 
-For each decoder, run the appropriate parser to generate the injection JSON configs
-that tell `graph.py` which tensors to inject into.
+Run `parser.py` on a directory of ONNX files to generate one JSON injection config
+per MatMul layer.  It auto-detects whether the model is quantized (INT8 — contains
+`Round` nodes) or float (FP16/FP32) and resolves the correct injection starting
+points accordingly.
 
-**INT8 models** (quantised — contain `Round` nodes):
 ```bash
-python parser.py decoders/7B16/
-# produces injection_llm/decoder-merge-{idx}_{layer}.json for each MatMul layer
+# INT8 quantised models
+python parser.py decoders/7B16/ --output_dir injection_llm
+
+# FP16 / FP32 float models
+python parser.py decoders/fp16/ --output_dir injection_llm
+
+# Target additional op types (e.g. also inject into Conv layers)
+python parser.py decoders/7B16/ --ops MatMul Conv --output_dir injection_llm
 ```
 
-**FP16 models** (non-quantised):
-```bash
-python parser_fp16.py decoders/fp16/
-# produces injection_llm/decoder-merge-{idx}-fp16_{layer}.json
+Each run produces `injection_llm/<model_stem>_<layer>.json` files, for example:
+```
+injection_llm/decoder-merge-8__self_attn_q_proj_MatMul.json
 ```
 
 Each JSON has the form:
