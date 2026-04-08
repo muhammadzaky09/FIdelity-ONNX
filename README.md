@@ -29,16 +29,16 @@ Fault injection framework for LLaMA-based ONNX models, implementing the
 
 ---
 
-## Supported fault models
+## Validated fault models (NVDLA, spatial parallelism k = 4, reuse factor t = 16)
 
 | Fault model   | Description | Precision |
 |---------------|-------------|-----------|
-| `INPUT`       | Bit-flip in one input activation, delta propagated through the layer | INT8 / FP16 |
-| `WEIGHT`      | Bit-flip in one weight value, delta propagated through the layer | INT8 / FP16 |
-| `INPUT16`     | Same as INPUT but only 16 contiguous output neurons are affected | INT8 / FP16 |
-| `WEIGHT16`    | Same as WEIGHT but only 16 contiguous output neurons are affected | INT8 / FP16 |
-| `RANDOM`      | One output neuron overwritten with a random value | FP32 / FP16 |
-| `RANDOM_BITFLIP` | One bit flipped in one output neuron | FP32 / FP16 |
+| `INPUT`       | Bit-flip in one input activation before SRAM, delta propagated to all neurons that use it | INT8 / FP16 |
+| `WEIGHT`      | Bit-flip in one weight value before SRAM, delta propagated to all neurons that use it | INT8 / FP16 |
+| `INPUT16`     | Same as INPUT but only 16 contiguous output neurons in datapath between SRAM and MAC units are affected | INT8 / FP16 |
+| `WEIGHT16`    | Same as WEIGHT but only 16 contiguous output neurons between SRAM and MAC units are affected | INT8 / FP16 |
+| `RANDOM`      | Error in local control units causing one neuron outputs random erroneous value | FP32 / FP16 |
+| `RANDOM_BITFLIP` | Bitflip in one neuron value inside/after MAC units  | FP32 / FP16 |
 
 ---
 
@@ -56,6 +56,7 @@ Requires **CUDA 12** and **cuDNN 9** for GPU inference with FP16 models.
 
 Place decoder ONNX files in `decoders/7B16/` (INT8) or `decoders/fp16/` (FP16).
 Expected filename pattern: `decoder-merge-{idx}.onnx`
+Also Prepare the config spec for the model. See docs/llm_inference.md and configs/llama_7b.json for example
 
 ### 3. Parse layer configs
 
@@ -102,8 +103,8 @@ python llm_inference.py --prompts_file prompts.txt --onnxdir decoders/7B16
 | `--model_config PATH` | `configs/llama_7b.json` | Model spec JSON — copy and edit for a different model |
 | `--onnxdir` | `alpaca` | Directory containing decoder ONNX files |
 | `--layer_files` | `injection_llm` | Directory with layer injection JSON configs |
-| `--precision` | `int8` | `int8`, `float16`, or `float32` |
-| `--fp16` / `--no_fp16` | `--fp16` | Enable/disable FP16 inference |
+| `--precision` | `int8` | weight precision `int8`, `float16`, or `float32` |
+| `--fp16` / `--no_fp16` | `--fp16` | Enable/disable matrix multiplication with FP16 precision |
 | `--temperature` | `0.0` | Sampling temperature |
 | `--topp` | `0.1` | Top-p nucleus sampling |
 | `--max_tokens` | `300` | Max tokens to generate per inference |
@@ -119,5 +120,5 @@ See `docs/llm_inference.md` for full details.
 - `rand_idx_inject` (INT64 scalar graph input) controls which element is targeted
   for `RANDOM`, `RANDOM_BITFLIP`. Pass it at inference time for reproducibility.
 - `bit_position` is 0-indexed from LSB. For FP16: bit 15 = sign, bits 10-14 = exponent,
-  bits 0-9 = mantissa. Use bit 14 (MSB of exponent) for a fault that survives INT8 quantisation.
+  bits 0-9 = mantissa. 
 - FP16 models require `CUDAExecutionProvider` — they cannot run on CPU.

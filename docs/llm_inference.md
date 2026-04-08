@@ -6,18 +6,6 @@ and a faulty inference and saves the comparison to CSV.
 
 ---
 
-## Usage
-
-```bash
-# Prompts from a local file
-python llm_inference.py --prompts_file prompts.txt [options]
-
-# Prompts from a HuggingFace dataset
-python llm_inference.py --dataset cais/mmlu --dataset_split test \
-                        --prompt_field question [options]
-```
-
----
 
 ## Arguments
 

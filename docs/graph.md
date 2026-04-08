@@ -98,6 +98,12 @@ A new `gs.Variable("rand_idx_inject", dtype=int64, shape=[])` is appended to
 `graph.inputs` before any node conversion. This makes it a named feed-dict input that
 the caller must supply at inference time (e.g. `np.array(42, dtype=np.int64)`).
 
+The value is a **flat element index** into the output tensor (C-order, i.e. the same
+order as `tensor.flatten()`). Valid range: `[0, total_elements − 1]` where
+`total_elements = product of all output tensor dimensions`. Internally, the injection
+subgraph flattens the output, uses `ScatterND` (RANDOM) or `BitFlip` (RANDOM_BITFLIP)
+to overwrite/flip that single element, then reshapes back to the original shape.
+
 ---
 
 ### INPUT / WEIGHT / INPUT16 / WEIGHT16 — delta propagation
@@ -200,6 +206,68 @@ onnx.save(model, output_path)
 | `delta_init` | Generate a random valid FP32 or FP16 value for RANDOM injection |
 | `_is_fp16_tensor` | Check if a named tensor is FP16 in the GraphSurgeon graph |
 | `analyze_paths_gs` | BFS to find all nodes on the path from src to target node |
+
+---
+
+## Reproducibility and random index control
+
+### `rand_idx_inject` — fault location
+
+Every injected model exposes a scalar `int64` graph input called `rand_idx_inject`.
+It selects the **flat element index** (C-order) of the single output neuron that
+receives the fault. You control it at inference time via the ONNX Runtime feed-dict:
+
+```python
+import numpy as np
+
+# Fixed index — fully reproducible across runs
+feed = {"rand_idx_inject": np.array(42, dtype=np.int64)}
+
+# Random index — varies per run
+n_elements = int(np.prod(output_shape))   # e.g. 1 * 4096 * 4096 for a MatMul output
+feed = {"rand_idx_inject": np.array(np.random.randint(0, n_elements), dtype=np.int64)}
+
+outputs = session.run(None, {**normal_inputs, **feed})
+```
+
+To reproduce a specific campaign, log the index used in each run and replay it:
+
+```python
+rng = np.random.default_rng(seed=0)   # seeded generator
+for _ in range(num_experiments):
+    idx = int(rng.integers(0, n_elements))
+    feed = {"rand_idx_inject": np.array(idx, dtype=np.int64)}
+    outputs = session.run(None, {**normal_inputs, **feed})
+```
+
+### `delta_init` — random value for RANDOM (non-bitflip) path
+
+The `RANDOM` fault model (not `RANDOM_BITFLIP`) bakes a random floating-point
+replacement value into the ONNX graph **at build time** via `delta_init()`.
+`delta_init` internally calls `np.random.randint` to assemble a random bit pattern.
+To make graph construction reproducible, set the NumPy seed **before** calling
+`modify_onnx_graph`:
+
+```python
+import numpy as np
+from graph import modify_onnx_graph
+
+np.random.seed(123)   # fixes the baked-in fault value
+out = modify_onnx_graph(config, {"precision": "float16"}, "RANDOM", bit_position=0)
+```
+
+> **Note:** For `RANDOM_BITFLIP`, `INPUT`, `WEIGHT`, `INPUT16`, and `WEIGHT16`
+> fault models the faulty value is derived deterministically from `rand_idx_inject`
+> and `bit_position` at inference time — `delta_init` is **not** called and no
+> NumPy seed is needed for graph construction.
+
+### Summary table
+
+| What                          | When it applies                          | How to control                        |
+|-------------------------------|------------------------------------------|---------------------------------------|
+| Fault **location** (element)  | All fault models                         | `rand_idx_inject` feed-dict value     |
+| Fault **value** (float delta) | `RANDOM` only                            | `np.random.seed(n)` before graph build |
+| Fault **bit position**        | All `BITFLIP` and `INPUT`/`WEIGHT` paths | `bit_position` argument to `modify_onnx_graph` |
 
 ---
 
