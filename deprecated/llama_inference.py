@@ -47,55 +47,28 @@ def load_prompts(args) -> list:
     return prompts
 
 class Llama:
-    def __init__(self, onnxdir='decoders/7B16', config: dict = {}, model_spec: dict = {}):
+    def __init__(self, onnxdir='decoders/7B16', config: dict = {}):
         if not os.path.exists(onnxdir):
             logger.error('{} not exist'.format(onnxdir))
 
         assert os.path.isdir(onnxdir)
 
-        self.DECODER_COUNT = model_spec.get('decoder_count', 32)
-        self.FINISH_TOKEN  = model_spec.get('eos_token_id', 2)
-        self.hidden_dim    = model_spec.get('hidden_dim', 4096)
-        self.n_heads       = model_spec.get('n_heads', 32)
-        self.head_dim      = model_spec.get('head_dim', 128)
-        self.decoder_template = model_spec.get('decoder_template', 'decoder-merge-{}.onnx')
-
-        # Tensor names for decoder inputs/outputs
-        in_names  = model_spec.get('input_names', {})
-        out_names = model_spec.get('output_names', {})
-        self.in_hidden     = in_names.get('hidden',       'hidden_in')
-        self.in_attn_mask  = in_names.get('attn_mask',    'attn_mask')
-        self.in_pos_ids    = in_names.get('position_ids', 'position_ids')
-        self.in_past_key   = in_names.get('past_key',     'past_key_in')
-        self.in_past_value = in_names.get('past_value',   'past_value_in')
-        self.out_hidden    = out_names.get('hidden',    'hidden_out')
-        self.out_past_key  = out_names.get('past_key',  'past_key')
-        self.out_past_value= out_names.get('past_value','past_value')
-
-        tokenizer_file = model_spec.get('tokenizer_file', 'tokenizer.model')
-        self.tokenizer = Tokenizer(os.path.join(onnxdir, tokenizer_file))
+        self.DECODER_COUNT = 32
+        # EOS token
+        self.FINISH_TOKEN = 2
+        self.tokenizer = Tokenizer(os.path.join(onnxdir, 'tokenizer.model'))
 
         pool = MemoryPoolSimple(config['poolsize'])
-        self.decoder = Decoder(
-            pool, onnxdir, self.decoder_template, self.DECODER_COUNT,
-            embed_file   = model_spec.get('embed_file',   'embed.onnx'),
-            norm_file    = model_spec.get('norm_file',    'norm.onnx'),
-            head_file    = model_spec.get('head_file',    'head.onnx'),
-            embed_input  = model_spec.get('embed_input',  'input'),
-            embed_output = model_spec.get('embed_output', 'embed'),
-            norm_input   = model_spec.get('norm_input',   'input'),
-            norm_output  = model_spec.get('norm_output',  'output'),
-            head_input   = model_spec.get('head_input',   'input'),
-            head_output  = model_spec.get('head_output',  'output'),
-        )
+        self.decoder = Decoder(pool, onnxdir, 'decoder-merge-{}.onnx',
+                               self.DECODER_COUNT)
         self.config = config
         self.device = 'cuda'
         self.seed = None
 
-        # KV cache
-        self.pastkeys   = [None] * self.DECODER_COUNT
-        self.pastvalues = [None] * self.DECODER_COUNT
-
+        # cache
+        self.pastkeys = [None for i in range(self.DECODER_COUNT)]
+        self.pastvalues = [None for i in range(self.DECODER_COUNT)]
+        
         self.faulty_decoders = {}
 
         pool.check()
@@ -182,10 +155,14 @@ class Llama:
         return outputs
 
     def decode(self, token: np.array):
+        # embed space
         hidden = self.decoder.embed(token)
-        assert hidden.shape[-1] == self.hidden_dim
+        assert hidden.shape[-1] == 4096
 
-        pastlen = 0 if self.pastkeys[0] is None else self.pastkeys[0].shape[-2]
+        if self.pastkeys[0] is None:
+            pastlen = 0
+        else:
+            pastlen = self.pastkeys[0].shape[-2]
         seqlen = hidden.shape[1]
 
         position_ids = np.arange(seqlen, dtype=np.int64).reshape((1, seqlen))
@@ -195,38 +172,48 @@ class Llama:
         attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, (1, seqlen), hidden, pastlen)
 
-        zero_tensor = np.zeros((1, self.n_heads, 0, self.head_dim), dtype=np.float32)
-
         for idx in range(self.DECODER_COUNT):
-            past_key   = self.pastkeys[idx]
+            past_key = self.pastkeys[idx]
             past_value = self.pastvalues[idx]
 
-            inputs = {
-                self.in_hidden:     hidden,
-                self.in_attn_mask:  attention_mask,
-                self.in_pos_ids:    position_ids,
-                self.in_past_key:   zero_tensor if past_key   is None else past_key,
-                self.in_past_value: zero_tensor if past_value is None else past_value,
-            }
+            if past_key is None:
+                zero_tensor = np.zeros((1, 32, 0, 128), dtype=np.float32)
+                inputs = {
+                    'hidden_in': hidden,
+                    'attn_mask': attention_mask,
+                    'position_ids': position_ids,
+                    'past_key_in': zero_tensor,
+                    'past_value_in': zero_tensor
+                }
+            else:
+                inputs = {
+                    'hidden_in': hidden,
+                    'attn_mask': attention_mask,
+                    'position_ids': position_ids,
+                    'past_key_in': past_key,
+                    'past_value_in': past_value
+                }
 
             if self.config['fp16']:
                 inputs = self.convert_to_fp16(inputs)
             outputs = self.decoder.decode(inputs, idx)
 
-            hidden = outputs[self.out_hidden]
-            self.pastkeys[idx]   = outputs[self.out_past_key]
-            self.pastvalues[idx] = outputs[self.out_past_value]
+            hidden = outputs['hidden_out']
+            self.pastkeys[idx] = outputs['past_key']
+            self.pastvalues[idx] = outputs['past_value']
 
         hidden = self.decoder.norm_head(hidden)
         return hidden
     
     def decode_faulty(self, token: np.ndarray):
         """
-        Faulty decode: runs all decoder layers normally except the target layer,
-        which is replaced by the injected ONNX module (_faulty_decode).
+        Faulty decode: Runs the decoder layers as normal except for one layer.
+        At the target decoder layer (specified in fault_config), the normal call is
+        replaced by a call to _faulty_decode().
         """
+        # Embed tokens.
         hidden = self.decoder.embed(token)
-        assert hidden.shape[-1] == self.hidden_dim
+        assert hidden.shape[-1] == 4096
 
         pastlen = 0 if self.pastkeys[0] is None else self.pastkeys[0].shape[-2]
         seqlen = hidden.shape[1]
@@ -236,31 +223,40 @@ class Llama:
         attention_mask = np.ones((1, seqlen + pastlen), dtype=np.float32)
         attention_mask = self._prepare_decoder_attention_mask(attention_mask, (1, seqlen), hidden, pastlen)
 
-        zero_tensor = np.zeros((1, self.n_heads, 0, self.head_dim), dtype=np.float32)
-
         for idx in range(self.DECODER_COUNT):
-            past_key   = self.pastkeys[idx]
+            past_key = self.pastkeys[idx]
             past_value = self.pastvalues[idx]
 
-            inputs = {
-                self.in_hidden:     hidden,
-                self.in_attn_mask:  attention_mask,
-                self.in_pos_ids:    position_ids,
-                self.in_past_key:   zero_tensor if past_key   is None else past_key,
-                self.in_past_value: zero_tensor if past_value is None else past_value,
-            }
+            if past_key is None:
+                zero_tensor = np.zeros((1, 32, 0, 128), dtype=np.float32)
+                inputs = {
+                    'hidden_in': hidden,
+                    'attn_mask': attention_mask,
+                    'position_ids': position_ids,
+                    'past_key_in': zero_tensor,
+                    'past_value_in': zero_tensor
+                }
+            else:
+                inputs = {
+                    'hidden_in': hidden,
+                    'attn_mask': attention_mask,
+                    'position_ids': position_ids,
+                    'past_key_in': past_key,
+                    'past_value_in': past_value
+                }
 
             if self.config['fp16']:
                 inputs = self.convert_to_fp16(inputs)
 
+            # If this is the target decoder layer, call the faulty module.
             if idx == self.fault_config['target_decoder_idx']:
                 outputs = self._faulty_decode(inputs, idx)
             else:
                 outputs = self.decoder.decode(inputs, idx)
 
-            hidden = outputs[self.out_hidden]
-            self.pastkeys[idx]   = outputs[self.out_past_key]
-            self.pastvalues[idx] = outputs[self.out_past_value]
+            hidden = outputs['hidden_out']
+            self.pastkeys[idx] = outputs['past_key']
+            self.pastvalues[idx] = outputs['past_value']
 
         hidden = self.decoder.norm_head(hidden)
         return hidden
@@ -442,30 +438,13 @@ class Llama:
             'faulty_token': faulty_token,
         }
 
-def extract_decoder_idx(path: str, decoder_template: str = 'decoder-merge-{}.onnx') -> int:
-    """
-    Extract the decoder layer index from the injected ONNX filename.
-
-    Uses the model's decoder_template (e.g. 'decoder-merge-{}.onnx') to
-    derive a stable prefix ('decoder-merge-') so this works for any naming
-    convention, not just LLaMA.
-    """
+def extract_decoder_idx(path):
+    """Extract decoder index from filename"""
+    import os
     filename = os.path.basename(path)
-    # Split the template on the format placeholder to get prefix/suffix
-    parts = decoder_template.split('{}')
-    prefix = parts[0]   # e.g. 'decoder-merge-'
-    if prefix and prefix in filename:
-        after_prefix = filename.split(prefix, 1)[1]
-        # The index is the leading digits (suffix may be '_injected.onnx' etc.)
-        idx_str = ''
-        for ch in after_prefix:
-            if ch.isdigit():
-                idx_str += ch
-            else:
-                break
-        if idx_str:
-            return int(idx_str)
-    raise ValueError(f"Cannot extract decoder index from '{filename}' using template '{decoder_template}'")
+    if 'decoder-merge-' in filename:
+        decoder_idx_str = filename.split('decoder-merge-')[1].split('_')[0]
+        return int(decoder_idx_str)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LLM fault-injection inference")
@@ -482,8 +461,6 @@ if __name__ == "__main__":
     parser.add_argument('--prompt_field', default='question',
                         help='Field name to use as the prompt string (default: question)')
 
-    parser.add_argument('--model_config', default='configs/llama_7b.json',
-                        help='Path to model spec JSON (default: configs/llama_7b.json)')
     parser.add_argument('--onnxdir',     default='alpaca',
                         help='Directory containing decoder ONNX files (default: alpaca)')
     parser.add_argument('--layer_files', default='injection_llm',
@@ -507,18 +484,13 @@ if __name__ == "__main__":
 
     logger.info("Starting fault injection experiments...")
 
-    # Load model spec
-    with open(args.model_config) as f:
-        model_spec = json.load(f)
-    logger.info(f"Loaded model config from {args.model_config}")
-
     # Load prompts
     prompts = load_prompts(args)
     if not prompts:
         logger.error("No prompts loaded. Exiting.")
         exit(1)
 
-    # Configure runtime options
+    # Configure Llama model
     llama_config = {
         'temperature': args.temperature,
         'topp':        args.topp,
@@ -539,8 +511,8 @@ if __name__ == "__main__":
     else:
         raise ValueError(f"Unsupported precision: {args.precision}")
 
-    # Create model instance
-    persistent_llama = Llama(onnxdir=llama_config['onnxdir'], config=llama_config, model_spec=model_spec)
+    # Create Llama instance
+    persistent_llama = Llama(onnxdir=llama_config['onnxdir'], config=llama_config)
 
     # Create CSV file for results
     csv_filename = 'fault_injection_results.csv'
@@ -589,8 +561,7 @@ if __name__ == "__main__":
 
                     # Set up fault config (always target first token)
                     fault_config = {
-                        'target_decoder_idx': extract_decoder_idx(
-                            faulty_path, model_spec.get('decoder_template', 'decoder-merge-{}.onnx')),
+                        'target_decoder_idx': extract_decoder_idx(faulty_path),
                         'target_token_idx': 0,
                         'faulty_decoder_path': faulty_path,
                     }

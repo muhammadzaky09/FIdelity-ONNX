@@ -1,0 +1,30 @@
+{
+  "decoder_count": 32,
+  "eos_token_id": 2,
+  "hidden_dim": 4096,
+  "n_heads": 32,
+  "head_dim": 128,
+  "decoder_template": "decoder-merge-{}.onnx",
+  "tokenizer_file": "tokenizer.model",
+  "embed_file": "embed.onnx",
+  "norm_file": "norm.onnx",
+  "head_file": "head.onnx",
+  "input_names": {
+    "hidden": "hidden_in",
+    "attn_mask": "attn_mask",
+    "position_ids": "position_ids",
+    "past_key": "past_key_in",
+    "past_value": "past_value_in"
+  },
+  "output_names": {
+    "hidden": "hidden_out",
+    "past_key": "past_key",
+    "past_value": "past_value"
+  },
+  "embed_input": "input",
+  "embed_output": "embed",
+  "norm_input": "input",
+  "norm_output": "output",
+  "head_input": "input",
+  "head_output": "output"
+}
