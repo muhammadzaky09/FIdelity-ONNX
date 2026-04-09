@@ -12,40 +12,39 @@ import tempfile
 import json
 
 def create_simple_test_model():
-    """Create a simple ONNX model for testing."""
+    """Create a simple ONNX model for testing.
+
+    Graph:  X → Relu → X_relu → MatMul(X_relu, W) → Y
+
+    X_relu is produced by a node, so analyze_paths_gs can trace a path from it
+    to test_matmul for the INPUT fault model.
+    """
     import onnx.helper as helper
-    import onnx.TensorProto as TensorProto
+    from onnx import TensorProto
     import numpy as np
-    
-    # Create a simple model: input -> MatMul -> output
-    X = helper.make_tensor_value_info('X', TensorProto.FLOAT, [1, 10])
-    Y = helper.make_tensor_value_info('Y', TensorProto.FLOAT, [1, 20])
-    
+
+    X      = helper.make_tensor_value_info('X',      TensorProto.FLOAT, [1, 10])
+    Y      = helper.make_tensor_value_info('Y',      TensorProto.FLOAT, [1, 20])
+    X_relu = helper.make_tensor_value_info('X_relu', TensorProto.FLOAT, [1, 10])
+
     # Weight initializer
     W_init = helper.make_tensor('W', TensorProto.FLOAT, [10, 20],
-                               np.random.randn(10, 20).astype(np.float32).flatten())
-    
-    # MatMul node
-    matmul_node = helper.make_node(
-        'MatMul',
-        inputs=['X', 'W'],
-        outputs=['Y'],
-        name='test_matmul'
-    )
-    
-    # Create the graph
+                                np.random.randn(10, 20).astype(np.float32).flatten())
+
+    relu_node   = helper.make_node('Relu',   inputs=['X'],      outputs=['X_relu'])
+    matmul_node = helper.make_node('MatMul', inputs=['X_relu', 'W'], outputs=['Y'],
+                                   name='test_matmul')
+
     graph = helper.make_graph(
-        [matmul_node],
+        [relu_node, matmul_node],
         'test_model',
         [X],
         [Y],
-        [W_init]
+        [W_init],
     )
-    
-    # Create the model
     model = helper.make_model(graph)
-    model.opset_import[0].version = 13
-    
+    model.opset_import[0].version = 18
+
     return model
 
 def test_graph_surgeon_conversion():
@@ -68,37 +67,34 @@ def test_graph_surgeon_conversion():
             "config": {
                 "model_name": model_path,
                 "target_layer": "test_matmul",
-                "input_tensor": "X",
-                "weight_tensor": "W"
+                "input_tensor": "X_relu",
+                "weight_tensor": "W",
             },
             "llama_config": {"precision": "float16"},
             "fault_model": "RANDOM",
-            "bit_position": 3
         },
         {
-            "name": "INPUT fault model",
+            "name": "INPUT fault model (int8)",
             "config": {
                 "model_name": model_path,
-                "target_layer": "test_matmul", 
-                "input_tensor": "X",
-                "weight_tensor": "W"
+                "target_layer": "test_matmul",
+                "input_tensor": "X_relu",
+                "weight_tensor": "W",
             },
             "llama_config": {"precision": "int8"},
             "fault_model": "INPUT",
-            "bit_position": 3
-        }
+        },
     ]
-    
+
     # Test each configuration
     for test_cfg in configs:
         print(f"\nTesting {test_cfg['name']}...")
-        
+
         try:
             output_path = modify_onnx_graph(
                 test_cfg["config"],
                 test_cfg["llama_config"],
                 test_cfg["fault_model"],
-                test_cfg["bit_position"]
             )
             
             # Verify output model
@@ -112,10 +108,17 @@ def test_graph_surgeon_conversion():
             
             # Check that injection nodes were added
             if test_cfg["fault_model"] == "RANDOM":
-                # Should have nodes with "_faulty" output
-                faulty_found = any("_faulty" in tensor.name for tensor in graph.tensors.values())
+                faulty_found = any("_faulty" in name for name in graph.tensors().keys())
                 assert faulty_found, "No faulty output tensor found for RANDOM model"
                 print("  ✓ Found faulty output tensor")
+            elif test_cfg["fault_model"] == "INPUT":
+                injected_found = any("_fault_injected" in name for name in graph.tensors().keys())
+                assert injected_found, "No fault_injected tensor found for INPUT model"
+                assert any(v.name == "bit_pos_inject" for v in graph.inputs), \
+                    "bit_pos_inject not in graph inputs"
+                assert any(v.name == "rand_idx_inject" for v in graph.inputs), \
+                    "rand_idx_inject not in graph inputs"
+                print("  ✓ Found fault_injected tensor and both runtime graph inputs")
             
             # Clean up
             if os.path.exists(output_path):

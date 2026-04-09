@@ -31,16 +31,18 @@ def build_model():
     A        = helper.make_tensor_value_info("A",               TensorProto.FLOAT16, [4, 4])
     B        = helper.make_tensor_value_info("B",               TensorProto.FLOAT16, [4, 8])
     ri       = helper.make_tensor_value_info("rand_idx_inject", TensorProto.INT64,   [])
+    bp       = helper.make_tensor_value_info("bit_pos_inject",  TensorProto.INT32,   [])
     Y_vi     = helper.make_tensor_value_info("Y",               TensorProto.FLOAT16, [4, 8])
     Y_faulty = helper.make_tensor_value_info("Y_faulty",        TensorProto.FLOAT16, [4, 8])
 
-    inj = create_random_bitflip_injection("Y", bit_position=BIT_POS, fp16=True,
-                                          rand_idx_name="rand_idx_inject")
+    inj = create_random_bitflip_injection("Y", fp16=True,
+                                          rand_idx_name="rand_idx_inject",
+                                          bit_pos_name="bit_pos_inject")
 
     graph = helper.make_graph(
         [helper.make_node("MatMul", ["A", "B"], ["Y"])] + inj,
         "test_rbf_cuda",
-        [A, B, ri],
+        [A, B, ri, bp],
         [Y_faulty],
         value_info=[Y_vi],
     )
@@ -82,7 +84,9 @@ def run_test():
     ri = np.array(3, dtype=np.int64)   # inject at flat index 3 — change this to test any element
 
     orig   = (A @ B).astype(np.float16)
-    faulty = sess.run(None, {"A": A, "B": B, "rand_idx_inject": ri})[0]
+    faulty = sess.run(None, {"A": A, "B": B,
+                             "rand_idx_inject": ri,
+                             "bit_pos_inject": np.array(BIT_POS, dtype=np.int32)})[0]
 
     flat_orig   = orig.flatten()
     flat_faulty = faulty.flatten()

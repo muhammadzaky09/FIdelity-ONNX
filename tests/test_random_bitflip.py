@@ -18,25 +18,27 @@ from inject_ops import create_random_bitflip_injection
 
 SO_PATH = os.path.join(os.path.dirname(__file__), '..', 'onnx-cuda-bitflip', 'build', 'onnx_bitflip.so')
 
-def build_model(rand_idx_name="rand_idx_inject"):
+def build_model(rand_idx_name="rand_idx_inject", bit_pos_name="bit_pos_inject"):
     """MatMul(A, B) → Y, then inject RANDOM_BITFLIP at Y."""
     A  = helper.make_tensor_value_info("A",  TensorProto.FLOAT16, [2, 4])
     B  = helper.make_tensor_value_info("B",  TensorProto.FLOAT16, [4, 3])
     Y  = helper.make_tensor_value_info("Y",  TensorProto.FLOAT16, [2, 3])
     ri = helper.make_tensor_value_info(rand_idx_name, TensorProto.INT64, [])
+    bp = helper.make_tensor_value_info(bit_pos_name,  TensorProto.INT32, [])
 
     matmul = helper.make_node("MatMul", ["A", "B"], ["Y"])
 
-    inj_nodes = create_random_bitflip_injection("Y", bit_position=7,
+    inj_nodes = create_random_bitflip_injection("Y",
                                                 fp16=True,
-                                                rand_idx_name=rand_idx_name)
+                                                rand_idx_name=rand_idx_name,
+                                                bit_pos_name=bit_pos_name)
 
     Y_faulty = helper.make_tensor_value_info("Y_faulty", TensorProto.FLOAT16, [2, 3])
 
     graph = helper.make_graph(
         [matmul] + inj_nodes,
         "test_rbf",
-        [A, B, ri],
+        [A, B, ri, bp],
         [Y_faulty],
     )
     model = helper.make_model(graph, opset_imports=[
@@ -67,7 +69,9 @@ def test_create_random_bitflip_injection():
         ri = np.int64(3)
 
         Y_orig   = (A @ B)
-        Y_faulty = sess.run(None, {"A": A, "B": B, "rand_idx_inject": ri})[0]
+        Y_faulty = sess.run(None, {"A": A, "B": B,
+                                   "rand_idx_inject": ri,
+                                   "bit_pos_inject": np.array(7, dtype=np.int32)})[0]
 
         diff = (Y_faulty != Y_orig)
         changed = np.argwhere(diff.flatten())

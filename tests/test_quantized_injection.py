@@ -23,24 +23,25 @@ from inject_ops import create_quantized_fault_injection
 
 
 def build_model(input_shape, bit_position, rand_idx_name, fp16=False, is_signed=True):
-    prec  = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
-    x_vi  = helper.make_tensor_value_info("x",              prec,            input_shape)
-    ri_vi = helper.make_tensor_value_info(rand_idx_name,    TensorProto.INT64, [])
-    out_vi = helper.make_tensor_value_info("delta",         prec,            input_shape)
+    prec   = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
+    x_vi   = helper.make_tensor_value_info("x",           prec,              input_shape)
+    ri_vi  = helper.make_tensor_value_info(rand_idx_name, TensorProto.INT64, [])
+    bp_vi  = helper.make_tensor_value_info("bit_pos_inject", TensorProto.INT32, [])
+    out_vi = helper.make_tensor_value_info("delta",        prec,              input_shape)
 
     inj_nodes = create_quantized_fault_injection(
         input_name="x",
         output_name="delta",
-        bit_position=bit_position,
         fp16=fp16,
         is_signed=is_signed,
         rand_idx_name=rand_idx_name,
+        bit_pos_name="bit_pos_inject",
     )
 
     graph = helper.make_graph(
         inj_nodes,
         "test_qfi",
-        [x_vi, ri_vi],
+        [x_vi, ri_vi, bp_vi],
         [out_vi],
     )
     return helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)])
@@ -62,7 +63,8 @@ def run_case(label, x_np, rand_idx, bit_position, fp16=False, is_signed=True):
 
     delta = sess.run(None, {
         "x":               x_np,
-        "rand_idx_inject": np.array(rand_idx, dtype=np.int64),
+        "rand_idx_inject": np.array(rand_idx,    dtype=np.int64),
+        "bit_pos_inject":  np.array(bit_position, dtype=np.int32),
     })[0]
 
     flat_x     = x_np.flatten()

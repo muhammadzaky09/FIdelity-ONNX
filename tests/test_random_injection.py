@@ -39,7 +39,7 @@ def inject(src_path):
         "weight_tensor": "",
     }
     llama_config = {"precision": "float32"}
-    modify_onnx_graph(config, llama_config, "RANDOM", bit_position=0)
+    modify_onnx_graph(config, llama_config, "RANDOM")
     return out_path
 
 # ── helpers ─────────────────────────────────────────────────────────────────
