@@ -12,20 +12,23 @@ No file I/O or graph loading — pure node building.
 
 #### `create_quantized_fault_injection`
 ```python
-create_quantized_fault_injection(input_name, output_name, bit_position,
+create_quantized_fault_injection(input_name, output_name,
                                   fp16=False, is_signed=True,
-                                  rand_idx_name="rand_idx_inject")
+                                  rand_idx_name="rand_idx_inject",
+                                  bit_pos_name="bit_pos_inject")
 ```
 Used by **INPUT**, **WEIGHT**, **INPUT16**, **WEIGHT16** on INT8 models.
 
-Produces a delta tensor representing the effect of flipping `bit_position`
-in the integer representation of one element at `rand_idx_inject`:
+Produces a delta tensor representing the effect of flipping the bit at
+`bit_pos_inject` in the integer representation of one element at `rand_idx_inject`:
 
 ```
-delta = Cast(XOR(Cast(src, INT8), bitmask), FLOAT) - Cast(src, FLOAT)
+bitmask = Cast(BitShift(1_u8, Cast(bit_pos_inject, UINT8), "LEFT"), INT8)
+delta   = Cast(XOR(Cast(src, INT8), bitmask), FLOAT) - Cast(src, FLOAT)
 ```
 
-The delta is later added to the cloned path output by `graph.py`.
+Both `rand_idx_inject` and `bit_pos_inject` are external graph inputs supplied
+at inference time. The delta is later added to the cloned path output by `graph.py`.
 
 ---
 
@@ -33,8 +36,9 @@ The delta is later added to the cloned path output by `graph.py`.
 
 #### `create_fp16_fault_injection`
 ```python
-create_fp16_fault_injection(input_name, output_name, bit_position,
-                             fp32=False, rand_idx_name="rand_idx_inject")
+create_fp16_fault_injection(input_name, output_name,
+                             fp32=False, rand_idx_name="rand_idx_inject",
+                             bit_pos_name="bit_pos_inject")
 ```
 Used by **INPUT**, **WEIGHT**, **INPUT16**, **WEIGHT16** on FP16 models.
 
@@ -42,12 +46,13 @@ Uses the `BitFlip` custom op (`custom.bitflip`) to flip one bit, then computes
 the delta in FP32 to avoid catastrophic cancellation:
 
 ```
-perturbed = BitFlip(src, bit_pos, rand_idx)          # bit-exact FP16 flip
-delta_f32 = Cast(perturbed, F32) - Cast(src, F32)    # subtract in FP32
-delta     = Cast(delta_f32, F16)                     # cast back
+perturbed = BitFlip(src, bit_pos_inject, rand_idx_inject)  # bit-exact FP16 flip
+delta_f32 = Cast(perturbed, F32) - Cast(src, F32)          # subtract in FP32
+delta     = Cast(delta_f32, F16)                           # cast back
 ```
 
-Set `fp32=True` when the source tensor is FP32 (adds Cast in/out around the FP16 op).
+`bit_pos_inject` (INT32 scalar) is an external graph input supplied at inference
+time. Set `fp32=True` when the source tensor is FP32 (adds Cast in/out around the FP16 op).
 
 ---
 
@@ -85,33 +90,38 @@ Works on both FP16 and FP32 tensors. `random_value` is baked in as a constant;
 
 #### `create_random_bitflip_injection`
 ```python
-create_random_bitflip_injection(output_name, bit_position, fp16=True,
-                                 rand_idx_name="rand_idx_inject")
+create_random_bitflip_injection(output_name, fp16=True,
+                                 rand_idx_name="rand_idx_inject",
+                                 bit_pos_name="bit_pos_inject")
 ```
 Used by **RANDOM_BITFLIP** on FP16. Delegates directly to the `BitFlip` custom op:
 
 ```
-faulty = BitFlip(output, bit_position, rand_idx)   # domain: custom.bitflip
+faulty = BitFlip(output, bit_pos_inject, rand_idx_inject)   # domain: custom.bitflip
 ```
 
-Requires `llama/onnx_bitflip.so` registered at session creation.
+Both `rand_idx_inject` and `bit_pos_inject` are external graph inputs supplied at
+inference time. Requires `llama/onnx_bitflip.so` registered at session creation.
 
 ---
 
 #### `create_random_bitflip_fp32`
 ```python
-create_random_bitflip_fp32(output_name, bit_position,
-                            rand_idx_name="rand_idx_inject")
+create_random_bitflip_fp32(output_name,
+                            rand_idx_name="rand_idx_inject",
+                            bit_pos_name="bit_pos_inject")
 ```
 Used by **RANDOM_BITFLIP** on FP32. Uses the Python custom op `DirectBitToggleFp32`
 (`ai.onnx.contrib` domain) from `onnxruntime_extensions`:
 
 ```
-elem   = GatherND(flat, [[rand_idx]])
-flipped = DirectBitToggleFp32(elem, bit_position)
-faulty = ScatterND(flat, [[rand_idx]], flipped)
+elem          = GatherND(flat, [[rand_idx_inject]])
+flipped       = DirectBitToggleFp32(elem, bit_pos_inject)
+faulty        = ScatterND(flat, [[rand_idx_inject]], flipped)
 output_faulty = Reshape(faulty, orig_shape)
 ```
+
+`bit_pos_inject` (INT32 scalar) is an external graph input supplied at inference time.
 
 ---
 

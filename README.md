@@ -117,8 +117,10 @@ See `docs/llm_inference.md` for full details.
 
 ## Notes
 
-- `rand_idx_inject` (INT64 scalar graph input) controls which element is targeted
-  for `RANDOM`, `RANDOM_BITFLIP`. Pass it at inference time for reproducibility.
-- `bit_position` is 0-indexed from LSB. For FP16: bit 15 = sign, bits 10-14 = exponent,
-  bits 0-9 = mantissa. 
+- `rand_idx_inject` (INT64 scalar graph input) controls which element is targeted.
+  Pass it at inference time for reproducibility.
+- `bit_pos_inject` (INT32 scalar graph input, all fault models except `RANDOM`) controls
+  which bit to flip. The same injected ONNX file covers all bit positions — no rebuild
+  needed when sweeping. Bit 0 = LSB. For FP16: bit 15 = sign, bits 10-14 = exponent,
+  bits 0-9 = mantissa.
 - FP16 models require `CUDAExecutionProvider` — they cannot run on CPU.

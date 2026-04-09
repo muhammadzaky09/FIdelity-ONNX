@@ -66,17 +66,21 @@ pass `--model_config configs/my_model.json`.
 ```
 for each layer_file in layer_files/:
     for each fault_model in [INPUT, WEIGHT, INPUT16, WEIGHT16]:
+        inject → faulty ONNX  (via graph.py's modify_onnx_graph)   # built ONCE
         for each bit_position in 0..15:
-            inject → faulty ONNX  (via graph.py's modify_onnx_graph)
             for each prompt:
                 golden_result  = process_prompt(prompt)
                 faulty_result  = process_prompt_faulty(prompt)
+                    # _faulty_decode injects rand_idx_inject + bit_pos_inject
+                    # into the feed-dict at inference time
                 append row to CSV
-            delete faulty ONNX + session
+        delete faulty ONNX + session
 ```
 
-The faulty model is re-generated and loaded fresh for each `(layer, fault_model,
-bit_position)` combination, then immediately destroyed to free GPU memory.
+The faulty model is built once per `(layer, fault_model)` combination. `bit_position`
+is now a runtime feed-dict input (`bit_pos_inject`) so the same ONNX file is reused
+across the entire bit range, which avoids repeated graph rebuilds and reduces GPU
+memory churn.
 
 ---
 

@@ -8,7 +8,7 @@ around the output of a target MatMul/Conv layer.
 ## Entry point
 
 ```python
-modify_onnx_graph(config, model_config, fault_model, bit_position) -> str
+modify_onnx_graph(config, model_config, fault_model) -> str
 ```
 
 Saves the injected model as `<original>_injected.onnx` (or `config["output_path"]`)
@@ -92,17 +92,26 @@ If `tgt_out` was a graph output (e.g. the MatMul is the final node), `graph.outp
 is also updated so `faulty_tensor` is reachable and `graph.cleanup()` does not prune
 the injection subgraph as dead code.
 
-**`rand_idx_inject` graph input**
+**Runtime graph inputs added by `modify_onnx_graph`**
 
-A new `gs.Variable("rand_idx_inject", dtype=int64, shape=[])` is appended to
-`graph.inputs` before any node conversion. This makes it a named feed-dict input that
-the caller must supply at inference time (e.g. `np.array(42, dtype=np.int64)`).
+Two scalar graph inputs are appended to make the injected model reusable across runs
+without rebuilding the ONNX graph:
 
-The value is a **flat element index** into the output tensor (C-order, i.e. the same
-order as `tensor.flatten()`). Valid range: `[0, total_elements − 1]` where
-`total_elements = product of all output tensor dimensions`. Internally, the injection
-subgraph flattens the output, uses `ScatterND` (RANDOM) or `BitFlip` (RANDOM_BITFLIP)
-to overwrite/flip that single element, then reshapes back to the original shape.
+| Name | dtype | Fault models | Purpose |
+|------|-------|--------------|---------|
+| `rand_idx_inject` | `int64` scalar | all | Flat C-order index of the element to corrupt |
+| `bit_pos_inject` | `int32` scalar | all except `RANDOM` | Which bit to flip (0 = LSB) |
+
+`rand_idx_inject` selects the **flat element index** into the output tensor (C-order,
+same as `tensor.flatten()`). Valid range: `[0, total_elements − 1]` where
+`total_elements = product of all output tensor dimensions`. The `BitFlip` CUDA op
+applies a modulo internally, so out-of-range values are handled safely for that path.
+
+`bit_pos_inject` replaces the old build-time `bit_position` argument. All bitflip
+subgraphs (FP16 `BitFlip`, FP32 `DirectBitToggleFp32`, INT8 `BitShift`+`BitwiseXor`)
+read it as a runtime tensor, so the same injected file can sweep every bit without
+a rebuild. It is **not** added for the plain `RANDOM` fault model, which does not
+perform a bit-flip.
 
 ---
 
@@ -240,6 +249,22 @@ for _ in range(num_experiments):
     outputs = session.run(None, {**normal_inputs, **feed})
 ```
 
+### `bit_pos_inject` — bit position (all bitflip fault models)
+
+For all fault models except `RANDOM`, the injected model also exposes a scalar
+`int32` graph input called `bit_pos_inject`. It specifies which bit to flip
+(0 = LSB). Because it is a runtime input, the **same injected ONNX file** covers
+every bit position — no need to call `modify_onnx_graph` again when sweeping bits.
+
+```python
+for bit_position in range(16):   # FP16: 0-15
+    feed = {
+        "rand_idx_inject": np.array(idx,          dtype=np.int64),
+        "bit_pos_inject":  np.array(bit_position, dtype=np.int32),
+    }
+    outputs = session.run(None, {**normal_inputs, **feed})
+```
+
 ### `delta_init` — random value for RANDOM (non-bitflip) path
 
 The `RANDOM` fault model (not `RANDOM_BITFLIP`) bakes a random floating-point
@@ -253,21 +278,21 @@ import numpy as np
 from graph import modify_onnx_graph
 
 np.random.seed(123)   # fixes the baked-in fault value
-out = modify_onnx_graph(config, {"precision": "float16"}, "RANDOM", bit_position=0)
+out = modify_onnx_graph(config, {"precision": "float16"}, "RANDOM")
 ```
 
 > **Note:** For `RANDOM_BITFLIP`, `INPUT`, `WEIGHT`, `INPUT16`, and `WEIGHT16`
 > fault models the faulty value is derived deterministically from `rand_idx_inject`
-> and `bit_position` at inference time — `delta_init` is **not** called and no
+> and `bit_pos_inject` at inference time — `delta_init` is **not** called and no
 > NumPy seed is needed for graph construction.
 
 ### Summary table
 
-| What                          | When it applies                          | How to control                        |
-|-------------------------------|------------------------------------------|---------------------------------------|
-| Fault **location** (element)  | All fault models                         | `rand_idx_inject` feed-dict value     |
-| Fault **value** (float delta) | `RANDOM` only                            | `np.random.seed(n)` before graph build |
-| Fault **bit position**        | All `BITFLIP` and `INPUT`/`WEIGHT` paths | `bit_position` argument to `modify_onnx_graph` |
+| What                          | When it applies                              | How to control                        |
+|-------------------------------|----------------------------------------------|---------------------------------------|
+| Fault **location** (element)  | All fault models                             | `rand_idx_inject` feed-dict value     |
+| Fault **bit position**        | All except `RANDOM`                          | `bit_pos_inject` feed-dict value      |
+| Fault **value** (float delta) | `RANDOM` only                                | `np.random.seed(n)` before graph build |
 
 ---
 
@@ -282,6 +307,9 @@ config = {
     "input_tensor":  "/self_attn/q_proj/Round_output_0",
     "weight_tensor": "/self_attn/v_proj/Round_output_0",
 }
-out = modify_onnx_graph(config, {"precision": "int8"}, "INPUT", bit_position=7)
+out = modify_onnx_graph(config, {"precision": "int8"}, "INPUT")
 print(out)  # decoders/7B16/decoder-merge-8_injected.onnx
+# At inference time, supply both scalars in the feed-dict:
+#   "rand_idx_inject": np.array(idx, dtype=np.int64)
+#   "bit_pos_inject":  np.array(bit_position, dtype=np.int32)
 ```
