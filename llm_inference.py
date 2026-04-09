@@ -271,6 +271,17 @@ class Llama:
         if path not in self.faulty_decoders:
             self.faulty_decoders[path] = OrtWrapper(path)
         faulty_handler = self.faulty_decoders[path]
+
+        # Augment inputs with the two fault-injection scalars required by the
+        # injected model.  hidden_dim is used as a conservative upper bound for
+        # the flat element index so the index is always in-bounds even when
+        # seq_len=1 (single-token generation step).
+        inputs = dict(inputs)
+        inputs["rand_idx_inject"] = np.array(
+            np.random.randint(0, self.hidden_dim), dtype=np.int64)
+        inputs["bit_pos_inject"] = np.array(
+            self.fault_config['bit_position'], dtype=np.int32)
+
         outputs = faulty_handler.forward(inputs)
         return outputs
 
@@ -568,6 +579,16 @@ if __name__ == "__main__":
         logger.info(f"{'='*40}")
 
         for fault_model in ['INPUT', 'WEIGHT', 'INPUT16', 'WEIGHT16']:
+
+            # Build the injected graph once per (layer_config, fault_model).
+            # bit_position is now a runtime feed-dict input (bit_pos_inject), so
+            # the same model file covers the whole bit_range without rebuilding.
+            logger.info(f"Creating faulty decoder for {fault_model}...")
+            faulty_path = modify_onnx_graph(config, llama_config, fault_model)
+
+            target_decoder_idx = extract_decoder_idx(
+                faulty_path, model_spec.get('decoder_template', 'decoder-merge-{}.onnx'))
+
             for bit_position in bit_range:
 
                 print(f"\n{'-'*40}")
@@ -577,8 +598,15 @@ if __name__ == "__main__":
                 random_seed = (bit_position * 1000 + 1)
                 persistent_llama.seed = random_seed
 
-                logger.info(f"Creating faulty decoder for {fault_model} on bit position {bit_position}...")
-                faulty_path = modify_onnx_graph(config, llama_config, fault_model, bit_position)
+                # fault_config carries bit_position so _faulty_decode can feed
+                # bit_pos_inject into the ORT session at inference time.
+                fault_config = {
+                    'target_decoder_idx': target_decoder_idx,
+                    'target_token_idx': 0,
+                    'faulty_decoder_path': faulty_path,
+                    'bit_position': bit_position,
+                }
+                persistent_llama.fault_config = fault_config
 
                 for experiment, prompt in enumerate(prompts):
                     print(f"\nRunning experiment {experiment}")
@@ -586,15 +614,6 @@ if __name__ == "__main__":
                     # Golden run
                     print("Running golden inference...")
                     golden_result = persistent_llama.process_prompt(prompt)
-
-                    # Set up fault config (always target first token)
-                    fault_config = {
-                        'target_decoder_idx': extract_decoder_idx(
-                            faulty_path, model_spec.get('decoder_template', 'decoder-merge-{}.onnx')),
-                        'target_token_idx': 0,
-                        'faulty_decoder_path': faulty_path,
-                    }
-                    persistent_llama.fault_config = fault_config
 
                     # Faulty run
                     print("Running faulty inference...")
@@ -624,14 +643,15 @@ if __name__ == "__main__":
                             'Faulty_Token': faulty_result['faulty_token'],
                         })
 
-                # Clean up the faulty decoder — explicit del before gc to release GPU memory promptly
-                if faulty_path in persistent_llama.faulty_decoders:
-                    sess = persistent_llama.faulty_decoders.pop(faulty_path)
-                    del sess
-                if os.path.exists(faulty_path):
-                    os.remove(faulty_path)
+            # Clean up the faulty decoder after all bit positions are done —
+            # explicit del before gc to release GPU memory promptly.
+            if faulty_path in persistent_llama.faulty_decoders:
+                sess = persistent_llama.faulty_decoders.pop(faulty_path)
+                del sess
+            if os.path.exists(faulty_path):
+                os.remove(faulty_path)
 
-                gc.collect()
+            gc.collect()
 
     logger.info("\nExperiments completed.")
     logger.info(f"Results saved to {csv_filename}")

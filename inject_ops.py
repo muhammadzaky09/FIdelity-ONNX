@@ -4,9 +4,10 @@ from typing import List
 from onnxruntime_extensions import onnx_op, PyCustomOpDef, get_library_path as _get_library_path
 import struct
 
-def create_quantized_fault_injection(input_name, output_name, bit_position,
+def create_quantized_fault_injection(input_name, output_name,
                                      fp16=False, is_signed=True,
-                                     rand_idx_name="rand_idx_inject"):
+                                     rand_idx_name="rand_idx_inject",
+                                     bit_pos_name="bit_pos_inject"):
     nodes = []
     suffix   = "_inject"
     int_type = TensorProto.INT8   if is_signed else TensorProto.UINT8
@@ -123,17 +124,36 @@ def create_quantized_fault_injection(input_name, output_name, bit_position,
         outputs=["idx_sc" + suffix]
     ))
 
-    # 9) Build the bitmask to flip a single bit
+    # 9) Build the bitmask to flip a single bit dynamically:
+    #    bitmask = (uint8)1 << bit_pos_name, then cast to int_type
     nodes.append(helper.make_node(
         "Constant",
         inputs=[],
-        outputs=["bitmask" + suffix],
+        outputs=["one_u8" + suffix],
         value=helper.make_tensor(
-            name="bitmask_val" + suffix,
-            data_type=int_type,
+            name="one_u8_val" + suffix,
+            data_type=TensorProto.UINT8,
             dims=[1],
-            vals=[1 << bit_position]
+            vals=[1]
         )
+    ))
+    nodes.append(helper.make_node(
+        "Cast",
+        inputs=[bit_pos_name],
+        outputs=["bit_pos_u8" + suffix],
+        to=TensorProto.UINT8
+    ))
+    nodes.append(helper.make_node(
+        "BitShift",
+        inputs=["one_u8" + suffix, "bit_pos_u8" + suffix],
+        outputs=["bitmask_u8" + suffix],
+        direction="LEFT"
+    ))
+    nodes.append(helper.make_node(
+        "Cast",
+        inputs=["bitmask_u8" + suffix],
+        outputs=["bitmask" + suffix],
+        to=int_type
     ))
 
     # 10) Scatter the bitmask into our zero vector
@@ -798,27 +818,25 @@ def create_random_fault_injection(output_name: str, random_value: float, fp16: b
     return nodes
 
 
-def create_random_bitflip_injection(output_name: str, bit_position: int,
+def create_random_bitflip_injection(output_name: str,
                                     fp16: bool = True,
-                                    rand_idx_name: str = "rand_idx_inject"):
+                                    rand_idx_name: str = "rand_idx_inject",
+                                    bit_pos_name: str = "bit_pos_inject"):
     """
     RANDOM_BITFLIP using the BitFlip custom op (custom.bitflip domain).
     Inputs: (fp16_tensor, bit_position:int32, fault_index:int64)
     BitFlip copies the full tensor and flips bit_position at fault_index —
     bit-exact, no float arithmetic, no rounding error.
     fault_index is supplied externally (rand_idx_name) for reproducibility.
+    bit_position is supplied externally (bit_pos_name) for reproducibility.
     """
     suffix = "_rbf"
     faulty_output = f"{output_name}_faulty"
     nodes = []
 
     nodes.append(helper.make_node(
-        'Constant', inputs=[], outputs=['bit_pos_const' + suffix],
-        value=helper.make_tensor('bit_pos_tensor' + suffix, TensorProto.INT32, [1], [bit_position])))
-
-    nodes.append(helper.make_node(
         'BitFlip',
-        inputs=[output_name, 'bit_pos_const' + suffix, rand_idx_name],
+        inputs=[output_name, bit_pos_name, rand_idx_name],
         outputs=[faulty_output],
         domain='custom.bitflip'))
 
@@ -828,8 +846,9 @@ def create_random_bitflip_injection(output_name: str, bit_position: int,
 
 
 
-def create_fp16_fault_injection(input_name, output_name, bit_position,
-                                fp32=False, rand_idx_name="rand_idx_inject"):
+def create_fp16_fault_injection(input_name, output_name,
+                                fp32=False, rand_idx_name="rand_idx_inject",
+                                bit_pos_name="bit_pos_inject"):
     nodes = []
     suffix = "_fp16fi"
 
@@ -845,16 +864,11 @@ def create_fp16_fault_injection(input_name, output_name, bit_position,
         intermediate_input = fp16_input
         intermediate_output = output_name + "_fp16" + suffix
 
-    # Bit-position constant (INT32 scalar)
-    nodes.append(helper.make_node(
-        'Constant', inputs=[], outputs=['bit_pos' + suffix],
-        value=helper.make_tensor(
-            'bit_pos_t' + suffix, TensorProto.INT32, [1], [bit_position])))
-
     # BitFlip → full perturbed tensor (bit-exact, no rounding)
+    # bit_pos_name (INT32 scalar) is supplied externally for reproducibility.
     nodes.append(helper.make_node(
         'BitFlip',
-        inputs=[intermediate_input, 'bit_pos' + suffix, rand_idx_name],
+        inputs=[intermediate_input, bit_pos_name, rand_idx_name],
         outputs=['perturbed' + suffix],
         domain='custom.bitflip'))
 
@@ -908,8 +922,9 @@ def direct_bit_toggle_fp32_op(x, bit_position):
             result[idx] = val
     
     return result
-def create_random_bitflip_fp32(output_name, bit_position,
-                               rand_idx_name: str = "rand_idx_inject"):
+def create_random_bitflip_fp32(output_name,
+                               rand_idx_name: str = "rand_idx_inject",
+                               bit_pos_name: str = "bit_pos_inject"):
     faulty_output = f"{output_name}_faulty"
     nodes = []
     suffix = "_rbf"
@@ -943,13 +958,11 @@ def create_random_bitflip_fp32(output_name, bit_position,
         'GatherND', inputs=['flat' + suffix, 'idx_2d' + suffix],
         outputs=['selected_val' + suffix]))
 
-    # Bit-flip the single selected element
-    nodes.append(helper.make_node(
-        'Constant', inputs=[], outputs=['bit_pos_const' + suffix],
-        value=helper.make_tensor('bit_pos_tensor' + suffix, TensorProto.INT32, [1], [bit_position])))
+    # Bit-flip the single selected element.
+    # bit_pos_name (INT32 scalar) is supplied externally for reproducibility.
     nodes.append(helper.make_node(
         'DirectBitToggleFp32',
-        inputs=['selected_val' + suffix, 'bit_pos_const' + suffix],
+        inputs=['selected_val' + suffix, bit_pos_name],
         outputs=['toggled_val' + suffix], domain="ai.onnx.contrib"))
 
     # ScatterND the toggled value back into flat tensor, then reshape

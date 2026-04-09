@@ -168,8 +168,7 @@ def analyze_paths_gs(graph: gs.Graph, target_layer: str, input_tensor_name: str,
 
 def modify_onnx_graph(config,
                       model_config,
-                      fault_model: str,
-                      bit_position: int = 3):
+                      fault_model: str):
     model_path = config["model_name"]
     default_tag = "_injected.onnx"
     output_path = config.get("output_path", model_path.replace(".onnx", default_tag))
@@ -204,26 +203,32 @@ def modify_onnx_graph(config,
         fp16_flag = _is_fp16_tensor(graph, tgt_out_name)
         tgt_fp16 = fp16_flag
         
+        # rand_idx_inject is always present: selects the flat element index to corrupt.
+        rand_idx_var = gs.Variable(name="rand_idx_inject", dtype=np.int64, shape=[])
+        graph.inputs.append(rand_idx_var)
+
         # Create injection nodes
         if "BITFLIP" in fault_model:
+            # bit_pos_inject is added only for BITFLIP paths where it is consumed
+            # by the BitFlip / DirectBitToggleFp32 op, allowing the same injected
+            # model to sweep all bit positions without rebuilding the graph.
+            bit_pos_var = gs.Variable(name="bit_pos_inject", dtype=np.int32, shape=[])
+            graph.inputs.append(bit_pos_var)
             if fp16_flag:
                 # BitFlip (custom.bitflip) copies the full tensor and flips one bit
-                # at fault_index — bit-exact, no rounding. Index supplied externally
-                # for reproducibility and systematic sweeping.
-                rand_idx_var = gs.Variable(name="rand_idx_inject", dtype=np.int64, shape=[])
-                graph.inputs.append(rand_idx_var)
-                injection_nodes = create_random_bitflip_injection(tgt_out_name, bit_position,
+                # at fault_index — bit-exact, no rounding.
+                injection_nodes = create_random_bitflip_injection(tgt_out_name,
                                                                   fp16=True,
-                                                                  rand_idx_name="rand_idx_inject")
+                                                                  rand_idx_name="rand_idx_inject",
+                                                                  bit_pos_name="bit_pos_inject")
             else:
-                # fp32: DirectBitToggleFp32 (Python custom op) with external rand index.
-                rand_idx_var = gs.Variable(name="rand_idx_inject", dtype=np.int64, shape=[])
-                graph.inputs.append(rand_idx_var)
-                injection_nodes = create_random_bitflip_fp32(tgt_out_name, bit_position,
-                                                             rand_idx_name="rand_idx_inject")
+                # fp32: DirectBitToggleFp32 (Python custom op).
+                injection_nodes = create_random_bitflip_fp32(tgt_out_name,
+                                                             rand_idx_name="rand_idx_inject",
+                                                             bit_pos_name="bit_pos_inject")
         else:
-            rand_idx_var = gs.Variable(name="rand_idx_inject", dtype=np.int64, shape=[])
-            graph.inputs.append(rand_idx_var)
+            # RANDOM (non-bitflip): fault value is baked in at build time via
+            # delta_init; only the element index varies at runtime.
             rnd_val = delta_init(is_float32=not fp16_flag)
             injection_nodes = create_random_fault_injection(tgt_out_name, rnd_val,
                                                             fp16=fp16_flag,
@@ -377,26 +382,35 @@ def modify_onnx_graph(config,
         fp16_flag = _is_fp16_tensor(graph, orig_tgt_out_name)
         tgt_fp16 = fp16_flag
 
-        # rand_idx_inject: INT64 scalar input — caller supplies np.random.randint(0, N)
-        # at each inference call so fault location varies across runs.
+        # rand_idx_inject: INT64 scalar — caller supplies the flat element index to
+        # corrupt at each inference call so fault location varies across runs.
+        # bit_pos_inject: INT32 scalar — caller supplies the bit to flip, allowing
+        # the same injected model to sweep all bit positions without rebuilding.
         rand_idx_var = gs.Variable(name="rand_idx_inject", dtype=np.int64, shape=[])
+        bit_pos_var  = gs.Variable(name="bit_pos_inject",  dtype=np.int32, shape=[])
         graph.inputs.append(rand_idx_var)
+        graph.inputs.append(bit_pos_var)
         created_tensors["rand_idx_inject"] = rand_idx_var
+        created_tensors["bit_pos_inject"]  = bit_pos_var
 
         if prec == 'int8':
             inj_nodes = create_quantized_fault_injection(
-                src_out_name, cloned_src_out_name, bit_position,
+                src_out_name, cloned_src_out_name,
                 fp16=fp16_flag, is_signed=True,
-                rand_idx_name="rand_idx_inject")
+                rand_idx_name="rand_idx_inject",
+                bit_pos_name="bit_pos_inject")
         elif prec == 'int4':
             inj_nodes = create_quantized_fault_injection(
-                src_out_name, cloned_src_out_name, bit_position,
+                src_out_name, cloned_src_out_name,
                 fp16=fp16_flag, is_signed=False,
-                rand_idx_name="rand_idx_inject")
+                rand_idx_name="rand_idx_inject",
+                bit_pos_name="bit_pos_inject")
         elif prec == 'float16':
             inj_nodes = create_fp16_fault_injection(
-                src_out_name, cloned_src_out_name, bit_position,
-                fp32=not fp16_flag, rand_idx_name="rand_idx_inject")
+                src_out_name, cloned_src_out_name,
+                fp32=not fp16_flag,
+                rand_idx_name="rand_idx_inject",
+                bit_pos_name="bit_pos_inject")
         else:
             raise ValueError("Unsupported precision")
         
@@ -521,6 +535,17 @@ def modify_onnx_graph(config,
                 for i, inp in enumerate(node.inputs):
                     if isinstance(inp, gs.Variable) and inp.name == orig_tgt_out_name:
                         node.inputs[i] = created_tensors[final_out_name]
+
+        # If orig_tgt_out is a graph output (e.g. the target layer is the last
+        # node), graph.cleanup() would discard the injection subgraph because
+        # final_out_name would be unreachable from any graph output.
+        # Inherit dtype/shape so gs.export_onnx can write a valid ValueInfoProto.
+        for i, out in enumerate(graph.outputs):
+            if isinstance(out, gs.Variable) and out.name == orig_tgt_out_name:
+                final_var = created_tensors[final_out_name]
+                final_var.dtype = out.dtype
+                final_var.shape = out.shape
+                graph.outputs[i] = final_var
     
     # Clean up and finalize
     graph.cleanup()
@@ -553,32 +578,32 @@ def modify_onnx_graph(config,
     return output_path
 
 
-# if __name__ == "__main__":
-#     # config = {
-#     #     "input_tensor": "/self_attn/q_proj/Round_output_0",
-#     #     "target_layer": "/self_attn/v_proj/MatMul",
-#     #     "weight_tensor": "/self_attn/v_proj/Round_output_0",
-#     #     "model_name": "decoders/7B16/decoder-merge-8.onnx"
-#     # }
-#     # config = {
-#     # "input_tensor": "/self_attn/q_proj/Round_2_output_0",
-#     # "target_layer": "/self_attn/MatMul",
-#     # "weight_tensor": "/self_attn/k_proj/Round_1_output_0",
-#     # "model_name": "decoders/7B16/decoder-merge-8.onnx"
-#     # }
+if __name__ == "__main__":
+    config = {
+        "input_tensor": "/self_attn/q_proj/Round_output_0",
+        "target_layer": "/self_attn/v_proj/MatMul",
+        "weight_tensor": "/self_attn/v_proj/Round_output_0",
+        "model_name": "decoders/7B16/decoder-merge-8.onnx"
+    }
+    # config = {
+    # "input_tensor": "/self_attn/q_proj/Round_2_output_0",
+    # "target_layer": "/self_attn/MatMul",
+    # "weight_tensor": "/self_attn/k_proj/Round_1_output_0",
+    # "model_name": "decoders/7B16/decoder-merge-8.onnx"
+    # }
     
-#     config = {
-#         "target_layer": "131",
-#         "input_tensor": "/input_layernorm/Mul_1_output_0",
-#         "weight_tensor": "130",
-#         "model_name": "decoders/fp16/decoder-merge-20-fp16.onnx"
-#     }
-#     model_config = {
-#         "precision": "float16"
-#     }
-#     fault_model = "RANDOM_BITFLIP"
-#     bit_position = 7   # high-impact bit (MSB of exponent); survives INT8 quantization
-#     modify_onnx_graph(config, model_config, fault_model, bit_position)
+    # config = {
+    #     "target_layer": "131",
+    #     "input_tensor": "/input_layernorm/Mul_1_output_0",
+    #     "weight_tensor": "130",
+    #     "model_name": "decoders/fp16/decoder-merge-20-fp16.onnx"
+    # }
+    model_config = {
+        "precision": "int8"
+    }
+    fault_model = "INPUT"
+    bit_position = 7   # high-impact bit (MSB of exponent); survives INT8 quantization
+    modify_onnx_graph(config, model_config, fault_model)
 
 
 
