@@ -578,13 +578,13 @@ def modify_onnx_graph(config,
     return output_path
 
 
-if __name__ == "__main__":
-    config = {
-        "input_tensor": "/self_attn/q_proj/Round_output_0",
-        "target_layer": "/self_attn/v_proj/MatMul",
-        "weight_tensor": "/self_attn/v_proj/Round_output_0",
-        "model_name": "decoders/7B16/decoder-merge-8.onnx"
-    }
+# if __name__ == "__main__":
+#     config = {
+#         "input_tensor": "/self_attn/q_proj/Round_output_0",
+#         "target_layer": "/self_attn/v_proj/MatMul",
+#         "weight_tensor": "/self_attn/v_proj/Round_output_0",
+#         "model_name": "decoders/7B16/decoder-merge-8.onnx"
+#     }
     # config = {
     # "input_tensor": "/self_attn/q_proj/Round_2_output_0",
     # "target_layer": "/self_attn/MatMul",
@@ -598,12 +598,12 @@ if __name__ == "__main__":
     #     "weight_tensor": "130",
     #     "model_name": "decoders/fp16/decoder-merge-20-fp16.onnx"
     # }
-    model_config = {
-        "precision": "int8"
-    }
-    fault_model = "INPUT"
-    bit_position = 7   # high-impact bit (MSB of exponent); survives INT8 quantization
-    modify_onnx_graph(config, model_config, fault_model)
+    # model_config = {
+    #     "precision": "int8"
+    # }
+    # fault_model = "INPUT"
+    # bit_position = 7   # high-impact bit (MSB of exponent); survives INT8 quantization
+    # modify_onnx_graph(config, model_config, fault_model)
 
 
 
