@@ -99,10 +99,11 @@ python llm_inference.py --prompts_file prompts.txt --onnxdir decoders/7B16
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--prompts_file PATH` | — | `.txt` (one per line) or `.json` (list of strings) |
-| `--dataset NAME` | — | HuggingFace dataset name (mutually exclusive with `--prompts_file`) |
-| `--dataset_split` | `test` | Dataset split to load |
-| `--prompt_field` | `question` | Field used as the prompt string |
+| `--csv PATH` | — | Local CSV file containing prompts (mutually exclusive with `--dataset`) |
+| `--dataset NAME` | — | HuggingFace dataset name (mutually exclusive with `--csv`) |
+| `--prompt_field` | `question` | Column name to use as the prompt string (applies to both sources) |
+| `--label_field` | *(none)* | Column name to record as ground-truth label in the CSV output |
+| `--dataset_split` | `test` | HuggingFace dataset split to load |
 | `--model_config PATH` | `configs/llama_7b.json` | Model spec JSON — copy and edit for a different model |
 | `--onnxdir` | `alpaca` | Directory containing decoder ONNX files |
 | `--layer_files` | `injection_llm` | Directory with layer injection JSON configs |
