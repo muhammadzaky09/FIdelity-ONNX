@@ -49,6 +49,7 @@ and a faulty inference and saves the comparison to CSV.
 | `--topp` | `0.1` | Top-p nucleus sampling |
 | `--max_tokens` | `300` | Max tokens to generate per inference |
 | `--poolsize` | `44` | Memory pool size in GB for decoder sessions |
+| `--resume` | *(off)* | Skip experiments already recorded in the CSV file (see below) |
 
 #### Model spec JSON (`--model_config`)
 
@@ -81,9 +82,11 @@ pass `--model_config configs/my_model.json`.
 ```
 for each layer_file in layer_files/:
     for each fault_model in [INPUT, WEIGHT, INPUT16, WEIGHT16]:
+        [resume] skip entire block if all (bit, prompt) pairs already in CSV
         inject → faulty ONNX  (via graph.py's modify_onnx_graph)   # built ONCE
         for each bit_position in 0..15:
-            for each prompt:
+            for each prompt (experiment index):
+                [resume] skip if (layer, fault_model, bit, experiment) in CSV
                 golden_result  = process_prompt(prompt)
                 faulty_result  = process_prompt_faulty(prompt)
                     # _faulty_decode injects rand_idx_inject + bit_pos_inject
@@ -96,6 +99,20 @@ The faulty model is built once per `(layer, fault_model)` combination. `bit_posi
 is now a runtime feed-dict input (`bit_pos_inject`) so the same ONNX file is reused
 across the entire bit range, which avoids repeated graph rebuilds and reduces GPU
 memory churn.
+
+### Resuming interrupted runs (`--resume`)
+
+When `--resume` is set, the script reads the existing CSV at startup and builds a
+set of already-completed keys `(Layer_Config, Fault_Model, Bit_Position, Experiment)`.
+Two levels of skipping are applied:
+
+1. **Fault-model level**: if every `(bit, prompt)` pair for a given
+   `(layer, fault_model)` is already in the CSV, the entire block is skipped —
+   no graph build and no GPU memory is allocated.
+2. **Prompt level**: within a partially-completed block, individual prompts that
+   already have a CSV row are skipped while the rest continue normally.
+
+If no CSV exists yet, `--resume` has no effect and a fresh run starts as normal.
 
 ---
 

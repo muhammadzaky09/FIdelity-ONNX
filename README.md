@@ -53,14 +53,17 @@ source setup.sh        # installs requirements + exports LD_LIBRARY_PATH for onn
 Requires **CUDA 12** and **cuDNN 9** for GPU inference with FP16 models.
 
 ### 2. Prepare ONNX models
-
+#### a. Formatting ONNX Files
 Place decoder ONNX files in intended files (e.g. `decoders/7B16/` or `decoders/fp16/`).
 Expected filename pattern: `decoder-merge-{idx}.onnx`
-Also Prepare the config spec for the model. See docs/llm_inference.md and configs/llama_7b.json for example
 
-To do FP16 matrix operation, export FP32 models using [convert-fp32-to-fp16.py](tools/convert-fp32-to-fp16.py)
+#### b. (Optional) Converting to FP16 model
+NVDLA doesnt natively support FP32 matrix multiplication. To do FP16 matrix operation, export FP32 models using [convert-fp32-to-fp16.py](tools/convert-fp32-to-fp16.py)
 
-### 3. Parse layer configs
+### 3. Making model configs
+Prepare the config spec for the model. See [llm_inference.md](docs/llm_inference.md) and [llama_7b.json](configs/llama_7b.json) for example. Netron is helpful
+
+### 4. Parse layer configs
 
 Run `parser.py` on a directory of ONNX files to generate one JSON injection config
 per MatMul layer (should also work for conv as well).  It auto-detects whether the model has its weight/activations quantized (INT8 — contains
@@ -85,10 +88,10 @@ Each JSON has the form:
     "model_name":    "decoders/7B16/decoder-merge-8.onnx"
 }
 ```
-### 4. Prepare Prompt (Dataset)
+### 5. Prepare Prompt (Dataset)
 FIdelity-ONNX supports two types of prompt source: Local CSVs and HuggingFace dataset. Check [llm_inference.md](docs/llm_inference.md) for additional information.
 
-### 5. Run bulk fault injection experiments (llm_inference.py)
+### 6. Run bulk fault injection experiments (llm_inference.py)
 
 Runs golden + faulty inference for every combination of
 `(layer config × fault model × bit position × prompt)` and saves results to CSV.
@@ -113,6 +116,7 @@ python llm_inference.py --prompts_file prompts.txt --onnxdir decoders/7B16
 | `--topp` | `0.1` | Top-p nucleus sampling |
 | `--max_tokens` | `300` | Max tokens to generate per inference |
 | `--poolsize` | `44` | Memory pool size in GB |
+| `--resume` | *(off)* | Skip experiments already recorded in the CSV; safe to restart interrupted runs |
 
 Results are appended to `fault_injection_results.csv`.
 See `docs/llm_inference.md` for full details.

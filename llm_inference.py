@@ -525,6 +525,8 @@ if __name__ == "__main__":
                         help='Max tokens to generate per inference (default: 300)')
     parser.add_argument('--poolsize',    type=int,   default=44,
                         help='Memory pool size in GB (default: 44)')
+    parser.add_argument('--resume',      action='store_true', default=False,
+                        help='Skip experiments already recorded in the CSV file')
 
     args = parser.parse_args()
 
@@ -565,8 +567,12 @@ if __name__ == "__main__":
     # Create model instance
     persistent_llama = Llama(onnxdir=llama_config['onnxdir'], config=llama_config, model_spec=model_spec)
 
-    # Create CSV file for results
-    csv_filename = 'fault_injection_results.csv'
+    # Create CSV file for results — name encodes model, precision, and dataset
+    # so different experiment configurations don't overwrite each other.
+    model_tag   = os.path.basename(args.onnxdir.rstrip('/\\'))
+    dataset_tag = (os.path.splitext(os.path.basename(args.csv))[0]
+                   if args.csv else args.dataset.split('/')[-1])
+    csv_filename = f'results_{model_tag}_{args.precision}_{dataset_tag}.csv'
     file_exists = os.path.isfile(csv_filename)
     fieldnames = [
         'Timestamp', 'Prompt', 
@@ -580,6 +586,14 @@ if __name__ == "__main__":
         if not file_exists:
             writer.writeheader()
 
+    completed = set()
+    if args.resume and file_exists:
+        with open(csv_filename, newline='') as f:
+            for row in csv.DictReader(f):
+                completed.add((row['Layer_Config'], row['Fault_Model'],
+                               row['Bit_Position'], row['Experiment']))
+        logger.info(f"Resume: {len(completed)} completed experiments loaded from {csv_filename}")
+
     for layer_file in os.listdir(llama_config['layer_files']):
         config_path = os.path.join(llama_config['layer_files'], layer_file)
         if os.path.isdir(config_path):
@@ -591,6 +605,17 @@ if __name__ == "__main__":
         logger.info(f"{'='*40}")
 
         for fault_model in ['INPUT', 'WEIGHT', 'INPUT16', 'WEIGHT16']:
+
+            # Skip the entire (layer, fault_model) block if every combination is
+            # already recorded — avoids graph build and GPU memory allocation.
+            if completed:
+                all_done = all(
+                    (layer_file, fault_model, str(bp), str(exp)) in completed
+                    for bp in bit_range for exp in range(len(prompts))
+                )
+                if all_done:
+                    logger.info(f"Resume: skipping {fault_model} for {layer_file} (all done)")
+                    continue
 
             # Build the injected graph once per (layer_config, fault_model).
             # bit_position is now a runtime feed-dict input (bit_pos_inject), so
@@ -622,6 +647,10 @@ if __name__ == "__main__":
 
                 for experiment, (prompt, label) in enumerate(zip(prompts, labels)):
                     print(f"\nRunning experiment {experiment}")
+
+                    if (layer_file, fault_model, str(bit_position), str(experiment)) in completed:
+                        print(f"Resume: skipping (already recorded)")
+                        continue
 
                     # Golden run
                     print("Running golden inference...")
