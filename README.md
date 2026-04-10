@@ -54,14 +54,16 @@ Requires **CUDA 12** and **cuDNN 9** for GPU inference with FP16 models.
 
 ### 2. Prepare ONNX models
 
-Place decoder ONNX files in `decoders/7B16/` (INT8) or `decoders/fp16/` (FP16).
+Place decoder ONNX files in intended files (e.g. `decoders/7B16/` or `decoders/fp16/`).
 Expected filename pattern: `decoder-merge-{idx}.onnx`
 Also Prepare the config spec for the model. See docs/llm_inference.md and configs/llama_7b.json for example
+
+To do FP16 matrix operation, export FP32 models using [convert-fp32-to-fp16.py](tools/convert-fp32-to-fp16.py)
 
 ### 3. Parse layer configs
 
 Run `parser.py` on a directory of ONNX files to generate one JSON injection config
-per MatMul layer.  It auto-detects whether the model is quantized (INT8 — contains
+per MatMul layer (should also work for conv as well).  It auto-detects whether the model has its weight/activations quantized (INT8 — contains
 `Round` nodes) or float (FP16/FP32) and resolves the correct injection starting
 points accordingly.
 
@@ -83,9 +85,10 @@ Each JSON has the form:
     "model_name":    "decoders/7B16/decoder-merge-8.onnx"
 }
 ```
+### 4. Prepare Prompt (Dataset)
+FIdelity-ONNX supports two types of prompt source: Local CSVs and HuggingFace dataset. Check [llm_inference.md](docs/llm_inference.md) for additional information.
 
-
-### 4. Run bulk fault injection experiments (llm_inference.py)
+### 5. Run bulk fault injection experiments (llm_inference.py)
 
 Runs golden + faulty inference for every combination of
 `(layer config × fault model × bit position × prompt)` and saves results to CSV.

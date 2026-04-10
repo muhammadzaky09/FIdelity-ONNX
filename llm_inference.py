@@ -18,33 +18,39 @@ from datetime import datetime
 import gc
 
 
-def load_prompts(args) -> list:
+def load_prompts(args) -> tuple:
     """
-    Load prompts as a flat list of strings from either:
-      --prompts_file  path.txt   (one prompt per line)
-      --prompts_file  path.json  (JSON list of strings)
-      --dataset name --dataset_split split --prompt_field field
-                                 (HuggingFace datasets)
+    Load prompts and optional ground-truth labels from either:
+      --csv PATH          local CSV file; --prompt_field and --label_field
+                          select columns (default: 'question' / None)
+      --dataset NAME      HuggingFace dataset; same --prompt_field /
+                          --label_field apply, plus --dataset_split
+
+    Returns (prompts, labels): two lists of equal length.  labels[i] is None
+    when --label_field is not set.
     """
-    if args.prompts_file:
-        path = args.prompts_file
-        if path.endswith('.json'):
-            with open(path) as f:
-                prompts = json.load(f)
-            assert isinstance(prompts, list), "--prompts_file JSON must be a list of strings"
-        else:
-            with open(path) as f:
-                prompts = [line.strip() for line in f if line.strip()]
-        logger.info(f"Loaded {len(prompts)} prompts from {path}")
-        return prompts
+    if args.csv:
+        import csv as _csv
+        with open(args.csv, newline='') as f:
+            rows = list(_csv.DictReader(f))
+        assert rows, f"--csv file '{args.csv}' is empty or has no header"
+        prompts = [str(r[args.prompt_field]) for r in rows]
+        labels  = ([str(r[args.label_field]) for r in rows]
+                   if args.label_field else [None] * len(rows))
+        logger.info(f"Loaded {len(prompts)} prompts from '{args.csv}' "
+                    f"(prompt={args.prompt_field}"
+                    + (f", label={args.label_field})" if args.label_field else ")"))
+        return prompts, labels
 
     # HuggingFace dataset mode
     ds = load_dataset(args.dataset, split=args.dataset_split)
-    field = args.prompt_field
-    prompts = [str(ex[field]) for ex in ds]
+    prompts = [str(ex[args.prompt_field]) for ex in ds]
+    labels  = ([str(ex[args.label_field]) for ex in ds]
+               if args.label_field else [None] * len(prompts))
     logger.info(f"Loaded {len(prompts)} prompts from dataset '{args.dataset}' "
-                f"(split={args.dataset_split}, field={field})")
-    return prompts
+                f"(split={args.dataset_split}, prompt={args.prompt_field}"
+                + (f", label={args.label_field})" if args.label_field else ")"))
+    return prompts, labels
 
 class Llama:
     def __init__(self, onnxdir='decoders/7B16', config: dict = {}, model_spec: dict = {}):
@@ -481,17 +487,23 @@ def extract_decoder_idx(path: str, decoder_template: str = 'decoder-merge-{}.onn
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LLM fault-injection inference")
 
-    # Prompt source — one of the two groups is required
+    # Prompt source — exactly one required
     prompt_src = parser.add_mutually_exclusive_group(required=True)
-    prompt_src.add_argument('--prompts_file', metavar='PATH',
-                            help='.txt (one per line) or .json (list of strings)')
+    prompt_src.add_argument('--csv', metavar='PATH',
+                            help='Local CSV file containing prompts (and optionally labels)')
     prompt_src.add_argument('--dataset', metavar='NAME',
                             help='HuggingFace dataset name, e.g. cais/mmlu')
 
-    parser.add_argument('--dataset_split', default='test',
-                        help='Dataset split to use (default: test)')
+    # Column/field selection — shared by both --csv and --dataset
     parser.add_argument('--prompt_field', default='question',
-                        help='Field name to use as the prompt string (default: question)')
+                        help='Column name to use as the prompt string (default: question)')
+    parser.add_argument('--label_field', default=None,
+                        help='Column name to record as ground-truth label in the CSV '
+                             '(e.g. "answer"). If omitted, Ground_Truth_Label is blank.')
+
+    # HuggingFace-only option
+    parser.add_argument('--dataset_split', default='test',
+                        help='HuggingFace dataset split to load (default: test)')
 
     parser.add_argument('--model_config', default='configs/llama_7b.json',
                         help='Path to model spec JSON (default: configs/llama_7b.json)')
@@ -523,8 +535,8 @@ if __name__ == "__main__":
         model_spec = json.load(f)
     logger.info(f"Loaded model config from {args.model_config}")
 
-    # Load prompts
-    prompts = load_prompts(args)
+    # Load prompts (and optional ground-truth labels)
+    prompts, labels = load_prompts(args)
     if not prompts:
         logger.error("No prompts loaded. Exiting.")
         exit(1)
@@ -557,10 +569,10 @@ if __name__ == "__main__":
     csv_filename = 'fault_injection_results.csv'
     file_exists = os.path.isfile(csv_filename)
     fieldnames = [
-        'Timestamp', 'Prompt',
+        'Timestamp', 'Prompt', 
         'Layer_Config', 'Fault_Model', 'Bit_Position',
         'Target_Decoder_Idx', 'Target_Token_Idx', 'Experiment',
-        'Golden_Raw_Output', 'Faulty_Raw_Output',
+        'Ground_Truth_Label','Golden_Raw_Output', 'Faulty_Raw_Output',
         'Golden_Token', 'Faulty_Token',
     ]
     with open(csv_filename, 'a' if file_exists else 'w', newline='') as csvfile:
@@ -608,7 +620,7 @@ if __name__ == "__main__":
                 }
                 persistent_llama.fault_config = fault_config
 
-                for experiment, prompt in enumerate(prompts):
+                for experiment, (prompt, label) in enumerate(zip(prompts, labels)):
                     print(f"\nRunning experiment {experiment}")
 
                     # Golden run
@@ -637,6 +649,7 @@ if __name__ == "__main__":
                             'Target_Decoder_Idx': fault_config['target_decoder_idx'],
                             'Target_Token_Idx': fault_config['target_token_idx'],
                             'Experiment': experiment,
+                            'Ground_Truth_Label': label,
                             'Golden_Raw_Output': golden_result['golden_output'],
                             'Faulty_Raw_Output': faulty_result['faulty_output'],
                             'Golden_Token': golden_result['golden_token'],

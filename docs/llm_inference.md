@@ -13,13 +13,28 @@ and a faulty inference and saves the comparison to CSV.
 
 | Argument | Description |
 |----------|-------------|
-| `--prompts_file PATH` | `.txt` (one prompt per line) or `.json` (list of strings) |
-| `--dataset NAME` | HuggingFace dataset name, e.g. `cais/mmlu` |
-| `--dataset_split` | Split to load (default: `test`) |
-| `--prompt_field` | Field name used as the prompt string (default: `question`) |
+| `--csv PATH` | Local CSV file; use `--prompt_field` / `--label_field` to select columns |
+| `--dataset NAME` | HuggingFace dataset name, e.g. `cais/mmlu`; use `--dataset_split` to pick the split |
 
-> **Note:** `--dataset` pulls only one field as a plain string. For multi-field
-> prompts (e.g. question + answer choices), pre-format them and use `--prompts_file`.
+### Column / field selection (shared by both sources)
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--prompt_field` | `question` | Column name to use as the prompt string |
+| `--label_field` | *(none)* | Column name to record as ground-truth label in the CSV (e.g. `answer`). If omitted, `Ground_Truth_Label` is blank. |
+
+### HuggingFace-only option
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--dataset_split` | `test` | Dataset split to load |
+
+> **Note 1:** For multi-field prompts (e.g. question + answer choices from MMLU), join the
+> fields into a single string first and export to CSV, then use `--csv`.
+
+> **Note 2:** HuggingFace dataset is formatted in Parquet and converted to Arrow format. 
+> llm_inference.py returns a dataset object that memory maps the Arrow files, so data stays on disk but the OS maps pages into RAM on demand.
+
 
 ### Model / inference config
 
@@ -92,6 +107,7 @@ Results are appended to `fault_injection_results.csv`.
 |--------|-------------|
 | `Timestamp` | ISO timestamp of the row |
 | `Prompt` | Input prompt string |
+| `Ground_Truth_Label` | Value of `--label_field` for this example; blank if not supplied |
 | `Layer_Config` | JSON filename from `layer_files/` |
 | `Fault_Model` | `INPUT` / `WEIGHT` / `INPUT16` / `WEIGHT16` |
 | `Bit_Position` | 0–15 |
@@ -129,7 +145,10 @@ across thousands of experiments.
 
 ### `load_prompts(args)`
 
-Returns a flat `list[str]` from either a local file or a HuggingFace dataset.
+Returns `(prompts, labels)` — two lists of equal length. `prompts` is a flat
+`list[str]` read from either a local CSV (`--csv`) or a HuggingFace dataset
+(`--dataset`). `labels` contains the value of `--label_field` per example, or
+`None` for each entry when `--label_field` is not set.
 
 ---
 
