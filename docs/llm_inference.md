@@ -100,6 +100,43 @@ is now a runtime feed-dict input (`bit_pos_inject`) so the same ONNX file is reu
 across the entire bit range, which avoids repeated graph rebuilds and reduces GPU
 memory churn.
 
+### Prompt consistency across conditions
+
+The prompts list is loaded once and iterated in the same fixed order for every
+`(layer, fault_model, bit_position)` combination. `experiment=N` always refers to
+`prompts[N]` regardless of which condition is running, so comparisons across layers,
+fault models, and bit positions are always on identical inputs.
+
+The two data sources preserve this property as follows:
+
+- `--csv`: row order is the order in the file. Do not sort or insert rows between
+  runs, as that shifts indices and breaks cross-condition comparability.
+- `--dataset`: HuggingFace returns rows in a deterministic Arrow-file order as long
+  as no shuffle is applied. The order is stable across restarts.
+
+`--resume` respects this guarantee: skipped experiments are identified by their
+index (`Experiment` column), so a restarted run continues from the correct prompt.
+
+### Reproducibility of the injected element index
+
+`rand_idx_inject` — the flat tensor index of the element to corrupt — is drawn
+from a **local** `np.random.default_rng` seeded by a value derived from the full
+experiment key:
+
+```
+inject_seed = hash((--seed, layer_file, fault_model, bit_position, experiment)) & 0xFFFFFFFF
+```
+
+This means:
+- The same `(layer, fault_model, bit_position, experiment)` tuple always injects
+  into the same element, whether run fresh or resumed.
+- The global `np.random` state is never touched, so no other part of the code
+  is affected.
+- Different experiment keys produce independent, uncorrelated indices.
+- Changing `--seed` reruns the entire suite with a different draw of injection
+  locations while keeping all other conditions (layer, fault model, bit, prompt)
+  identical — useful for sensitivity analysis across multiple random seeds.
+
 ### Resuming interrupted runs (`--resume`)
 
 When `--resume` is set, the script reads the existing CSV at startup and builds a

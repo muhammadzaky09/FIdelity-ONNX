@@ -117,6 +117,7 @@ python llm_inference.py --prompts_file prompts.txt --onnxdir decoders/7B16
 | `--max_tokens` | `300` | Max tokens to generate per inference |
 | `--poolsize` | `44` | Memory pool size in GB |
 | `--resume` | *(off)* | Skip experiments already recorded in the CSV; safe to restart interrupted runs |
+| `--seed` | `0` | Global seed mixed into the injection index derivation; change to get a different draw of fault locations |
 
 Results are appended to `fault_injection_results.csv`.
 See `docs/llm_inference.md` for full details.

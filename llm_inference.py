@@ -282,9 +282,15 @@ class Llama:
         # injected model.  hidden_dim is used as a conservative upper bound for
         # the flat element index so the index is always in-bounds even when
         # seq_len=1 (single-token generation step).
+        #
+        # rand_idx_inject is drawn from a local RNG seeded by inject_seed, which
+        # is derived from (layer, fault_model, bit_position, experiment) in the
+        # outer loop.  This makes the injected element index fully reproducible
+        # across restarts without touching the global np.random state.
         inputs = dict(inputs)
+        rng = np.random.default_rng(self.fault_config.get('inject_seed'))
         inputs["rand_idx_inject"] = np.array(
-            np.random.randint(0, self.hidden_dim), dtype=np.int64)
+            rng.integers(0, self.hidden_dim), dtype=np.int64)
         inputs["bit_pos_inject"] = np.array(
             self.fault_config['bit_position'], dtype=np.int32)
 
@@ -527,6 +533,10 @@ if __name__ == "__main__":
                         help='Memory pool size in GB (default: 44)')
     parser.add_argument('--resume',      action='store_true', default=False,
                         help='Skip experiments already recorded in the CSV file')
+    parser.add_argument('--seed',        type=int, default=0,
+                        help='Global seed mixed into the injection index derivation. '
+                             'Change to get a different draw of fault locations '
+                             'while keeping all other conditions identical (default: 0)')
 
     args = parser.parse_args()
 
@@ -651,6 +661,14 @@ if __name__ == "__main__":
                     if (layer_file, fault_model, str(bit_position), str(experiment)) in completed:
                         print(f"Resume: skipping (already recorded)")
                         continue
+
+                    # Derive a deterministic seed for rand_idx_inject from the
+                    # full experiment key so the injected element index is
+                    # reproducible across restarts and comparable across conditions.
+                    # args.seed lets you run the full suite with a different draw
+                    # of fault locations without changing anything else.
+                    inject_seed = hash((args.seed, layer_file, fault_model, bit_position, experiment)) & 0xFFFFFFFF
+                    persistent_llama.fault_config['inject_seed'] = inject_seed
 
                     # Golden run
                     print("Running golden inference...")
