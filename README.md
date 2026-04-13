@@ -14,6 +14,7 @@ Fault injection framework for LLaMA-based ONNX models, implementing the
 ├── llm_inference.py      # End-to-end inference runner: golden + faulty, saves CSV
 ├── parser.py             # Parses any ONNX model → injection JSON configs (auto-detects quantized vs float)
 ├── axes_parser.py        # ONNX graph patches (ReduceMean/Max axes, initializer handling)
+├── int8/                 # INT8 Quantized export helpers + SmoothQuant flow (see int8/README.md)
 ├── configs/
 │   └── llama_7b.json     # Model spec: layer count, tensor names, file layout, KV cache dims
 ├── injection_llm/        # JSON layer configs produced by parser.py
@@ -26,6 +27,9 @@ Fault injection framework for LLaMA-based ONNX models, implementing the
 ├── setup.sh              # Environment setup (pip install + LD_LIBRARY_PATH)
 └── requirements.txt
 ```
+
+For the patched `transformers`-based INT8 export flow, see
+[int8/README.md](int8/README.md).
 
 ---
 
