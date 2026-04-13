@@ -1,5 +1,6 @@
 from typing import List, Optional
-from transformers import LlamaForCausalLM, LlamaTokenizer
+from transformers.models.llama.modeling_llama import LlamaForCausalLM 
+from transformers.models.llama.tokenization_llama import LlamaTokenizer
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationMixin
 from smoothquant.fake_quant import quantize_llama_like
 from smoothquant.smooth import smooth_lm

@@ -259,6 +259,8 @@ class LlamaAttention(nn.Module):
 
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        scale = attn_weights.max(dim=-1, keepdim=True).values.clamp(min=1e-5) / 127.0
+        attn_weights = torch.round(attn_weights / scale) * scale
         attn_output = torch.matmul(attn_weights, value_states)
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
@@ -563,7 +565,7 @@ class LlamaModel(LlamaPreTrainedModel):
             onnx_filepath = '/workspace/llama.onnx/7B/embed.onnx'
             if not os.path.exists(onnx_filepath):
                 onnx_dynamic_axes = {"input": {1: "N"}}
-                torch.onnx.export(model=self.embed_tokens, args=input_ids, f=onnx_filepath, verbose=False, input_names=["input"], output_names=["embed"], dynamic_axes=onnx_dynamic_axes)
+                torch.onnx.export(model=self.embed_tokens, args=input_ids, f=onnx_filepath, verbose=False, input_names=["input"], output_names=["embed"], dynamic_axes=onnx_dynamic_axes, external_data=False, dynamo=False)
                 verify_onnx(onnx_filepath, {'input': input_ids}, inputs_embeds)
 
         # embed positions
@@ -632,7 +634,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     if not os.path.exists(onnx_filepath):
                         onnx_inputs = (hidden_states,attention_mask,position_ids,past_key_value,False,True)
 
-                        torch.onnx.export(model=decoder_layer, args=onnx_inputs, f=onnx_filepath, verbose=False, input_names=onnx_inp_names, output_names=onnx_out_names, dynamic_axes=onnx_dynamic_axes)
+                        torch.onnx.export(model=decoder_layer, args=onnx_inputs, f=onnx_filepath, verbose=False, input_names=onnx_inp_names, output_names=onnx_out_names, dynamic_axes=onnx_dynamic_axes, dynamo=False)
                         verify_onnx(onnx_filepath, {"hidden_in":hidden_states, 'attn_mask':attention_mask, 'position_ids': position_ids, 'past_key_in': past_key_value[0], 'past_value_in': past_key_value[1]}, layer_outputs[0])
 
 
@@ -676,7 +678,7 @@ class LlamaModel(LlamaPreTrainedModel):
         onnx_filepath = "/workspace/llama.onnx/7B/norm.onnx"
         if not os.path.exists(onnx_filepath):
             onnx_dynamic_axes = {"input": {1: "N"}}
-            torch.onnx.export(model=self.norm, args=(norm_in), f=onnx_filepath, verbose=False, input_names=["input"], output_names=["output"], dynamic_axes=onnx_dynamic_axes)
+            torch.onnx.export(model=self.norm, args=(norm_in), f=onnx_filepath, verbose=False, input_names=["input"], output_names=["output"], dynamic_axes=onnx_dynamic_axes, external_data=False, dynamo=False)
             verify_onnx(onnx_filepath, {"input":norm_in}, hidden_states)
 
         # add hidden states from the last decoder layer
@@ -792,7 +794,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         onnx_filepath = '/workspace/llama.onnx/7B/head.onnx'
         if not os.path.exists(onnx_filepath):
             onnx_dynamic_axes = {"input": {1: "N"}}
-            torch.onnx.export(model=self.lm_head, args=(hidden_states), f=onnx_filepath, verbose=False, input_names=["input"], output_names=["output"], dynamic_axes=onnx_dynamic_axes)
+            torch.onnx.export(model=self.lm_head, args=(hidden_states), f=onnx_filepath, verbose=False, input_names=["input"], output_names=["output"], dynamic_axes=onnx_dynamic_axes, external_data=False, dynamo=False)
             verify_onnx(onnx_filepath, {"input":hidden_states}, logits)
 
 
@@ -978,3 +980,12 @@ class LlamaForSequenceClassification(LlamaPreTrainedModel):
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
         )
+
+__all__ = [
+    "LlamaForCausalLM",
+    "LlamaModel",
+    "LlamaPreTrainedModel",
+    "LlamaForSequenceClassification",
+    "LlamaForQuestionAnswering",
+    "LlamaForTokenClassification",
+]
