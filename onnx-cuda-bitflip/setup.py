@@ -21,14 +21,17 @@ class CMakeBuild(build_ext):
             '-DPYTHON_EXECUTABLE=' + sys.executable
         ]
 
-        # Try to find ONNXRuntime
+        # CMake also auto-discovers ../onnxruntime-dev when these are not set.
         ort_include_dir = os.environ.get('ONNXRUNTIME_INCLUDE_DIR', '')
+        ort_library = os.environ.get('ONNXRUNTIME_LIBRARY', '')
         ort_lib_dir = os.environ.get('ONNXRUNTIME_LIB_DIR', '')
-        
+
         if ort_include_dir:
             cmake_args.append(f'-DONNXRUNTIME_INCLUDE_DIR={ort_include_dir}')
+        if ort_library:
+            cmake_args.append(f'-DONNXRUNTIME_LIBRARY={ort_library}')
         if ort_lib_dir:
-            cmake_args.append(f'-DONNXRUNTIME_LIB_DIR={ort_lib_dir}')
+            cmake_args.append(f'-DONNXRUNTIME_LIBRARY={os.path.join(ort_lib_dir, "libonnxruntime.so")}')
 
         cfg = 'Debug' if self.debug else 'Release'
         build_args = ['--config', cfg]

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+.git/
+.codex/
+
+onnx-cuda-bitflip/build/
+onnx-cuda-bitflip/debug.log
+
+fault_injection_results/
+fault_injection_results.csv
+csvs/
+
+*.log

@@ -523,7 +523,7 @@ if __name__ == "__main__":
                         help='Run inference in FP16 (default: true)')
     parser.add_argument('--no_fp16',     action='store_false', dest='fp16',
                         help='Disable FP16 inference')
-    parser.add_argument('--temperature', type=float, default=0.0,
+    parser.add_argument('--temperature', type=float, default=0.001,
                         help='Sampling temperature (default: 0)')
     parser.add_argument('--topp',        type=float, default=0.1,
                         help='Top-p sampling (default: 0.1)')
