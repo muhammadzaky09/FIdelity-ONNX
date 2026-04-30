@@ -776,6 +776,149 @@ def create_input16_mask(matmul_output="y", masked_output="y_masked", block_lengt
     
     return nodes
 
+# -------------------------------------------------------------
+# Fully-connected-specific 16-neuron masks
+# -------------------------------------------------------------
+
+def create_fc_input16_mask(fc_output="y", masked_output="y_masked", block_length=16, fp16=True):
+    """Keep one NVDLA INPUT16 FC faulty-neuron group.
+
+    For FC outputs shaped [..., out_features], FIdelity Table II describes
+    INPUT16 as 16 consecutive output neurons using the same faulty value.
+    This masks one flattened batch row and up to 16 consecutive output
+    features in that row.
+    """
+    nodes = []
+    suffix = "_fim"
+
+    nodes.append(helper.make_node("Shape", [fc_output], ["shape"+suffix]))
+    nodes.append(helper.make_node("Flatten", [fc_output], ["flat"+suffix], axis=-1))
+    nodes.append(helper.make_node("Shape", ["flat"+suffix], ["flat_shape"+suffix]))
+
+    nodes.append(helper.make_node("Constant", [], ["z"+suffix],
+        value=helper.make_tensor("z_t"+suffix, TensorProto.INT64, [], [0])))
+    nodes.append(helper.make_node("Constant", [], ["one"+suffix],
+        value=helper.make_tensor("one_t"+suffix, TensorProto.INT64, [], [1])))
+    nodes.append(helper.make_node("Constant", [], ["idx0"+suffix],
+        value=helper.make_tensor("idx0_t"+suffix, TensorProto.INT64, [], [0])))
+    nodes.append(helper.make_node("Constant", [], ["idx1"+suffix],
+        value=helper.make_tensor("idx1_t"+suffix, TensorProto.INT64, [], [1])))
+
+    nodes.append(helper.make_node("Gather", ["flat_shape"+suffix, "idx0"+suffix], ["Rdim"+suffix], axis=0))
+    nodes.append(helper.make_node("Gather", ["flat_shape"+suffix, "idx1"+suffix], ["Fdim"+suffix], axis=0))
+
+    nodes.append(helper.make_node("Constant", [], ["blk"+suffix],
+        value=helper.make_tensor("blk_t"+suffix, TensorProto.INT64, [], [block_length])))
+    nodes.append(helper.make_node("Min", ["blk"+suffix, "Fdim"+suffix], ["vblock"+suffix]))
+    nodes.append(helper.make_node("Sub", ["Fdim"+suffix, "vblock"+suffix], ["maxst"+suffix]))
+    nodes.append(helper.make_node("Add", ["maxst"+suffix, "one"+suffix], ["start_count"+suffix]))
+
+    nodes.append(helper.make_node("Cast", ["start_count"+suffix], ["start_count_f"+suffix], to=TensorProto.FLOAT))
+    nodes.append(helper.make_node("RandomUniform", [], ["rstart"+suffix], dtype=TensorProto.FLOAT, high=1.0, low=0.0, shape=[1]))
+    nodes.append(helper.make_node("Mul", ["rstart"+suffix, "start_count_f"+suffix], ["rst_scaled"+suffix]))
+    nodes.append(helper.make_node("Floor", ["rst_scaled"+suffix], ["rst_floor"+suffix]))
+    nodes.append(helper.make_node("Cast", ["rst_floor"+suffix], ["sidx"+suffix], to=TensorProto.INT64))
+
+    nodes.append(helper.make_node("Cast", ["Rdim"+suffix], ["rdim_f"+suffix], to=TensorProto.FLOAT))
+    nodes.append(helper.make_node("RandomUniform", [], ["rrow"+suffix], dtype=TensorProto.FLOAT, high=1.0, low=0.0, shape=[1]))
+    nodes.append(helper.make_node("Mul", ["rrow"+suffix, "rdim_f"+suffix], ["rrow_scaled"+suffix]))
+    nodes.append(helper.make_node("Floor", ["rrow_scaled"+suffix], ["rrow_floor"+suffix]))
+    nodes.append(helper.make_node("Cast", ["rrow_floor"+suffix], ["rsel"+suffix], to=TensorProto.INT64))
+
+    nodes.append(helper.make_node("Range", ["z"+suffix, "Rdim"+suffix, "one"+suffix], ["ridx"+suffix]))
+    nodes.append(helper.make_node("Range", ["z"+suffix, "Fdim"+suffix, "one"+suffix], ["fidx"+suffix]))
+    nodes.append(helper.make_node("Equal", ["ridx"+suffix, "rsel"+suffix], ["rmask1d"+suffix]))
+    nodes.append(helper.make_node("Add", ["sidx"+suffix, "vblock"+suffix], ["endidx"+suffix]))
+    nodes.append(helper.make_node("GreaterOrEqual", ["fidx"+suffix, "sidx"+suffix], ["ge"+suffix]))
+    nodes.append(helper.make_node("Less", ["fidx"+suffix, "endidx"+suffix], ["lt"+suffix]))
+    nodes.append(helper.make_node("And", ["ge"+suffix, "lt"+suffix], ["fmask1d"+suffix]))
+
+    nodes.append(helper.make_node("Constant", [], ["raxes"+suffix],
+        value=helper.make_tensor("raxes_t"+suffix, TensorProto.INT64, [1], [1])))
+    nodes.append(helper.make_node("Constant", [], ["faxes"+suffix],
+        value=helper.make_tensor("faxes_t"+suffix, TensorProto.INT64, [1], [0])))
+    nodes.append(helper.make_node("Unsqueeze", ["rmask1d"+suffix, "raxes"+suffix], ["rmask2d"+suffix]))
+    nodes.append(helper.make_node("Unsqueeze", ["fmask1d"+suffix, "faxes"+suffix], ["fmask2d"+suffix]))
+    nodes.append(helper.make_node("And", ["rmask2d"+suffix, "fmask2d"+suffix], ["mask2d"+suffix]))
+
+    dtype = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
+    nodes.append(helper.make_node("ConstantOfShape", ["flat_shape"+suffix], ["zeros2d"+suffix],
+        value=helper.make_tensor("zv"+suffix, dtype, [1], [0.0])))
+    nodes.append(helper.make_node("Where", ["mask2d"+suffix, "flat"+suffix, "zeros2d"+suffix], ["masked_flat"+suffix]))
+    nodes.append(helper.make_node("Reshape", ["masked_flat"+suffix, "shape"+suffix], [masked_output]))
+
+    return nodes
+
+
+def create_fc_weight16_mask(fc_output="y", masked_output="y_masked", block_length=16, fp16=True):
+    """Keep one NVDLA WEIGHT16 FC faulty-neuron group.
+
+    For FC outputs shaped [..., out_features], FIdelity Table II describes
+    WEIGHT16 as one out of 16 output neurons affected, for a total of up to
+    16 faulty neurons. This masks up to 16 consecutive flattened batch rows
+    at one output feature.
+    """
+    nodes = []
+    suffix = "_fwm"
+
+    nodes.append(helper.make_node("Shape", [fc_output], ["shape"+suffix]))
+    nodes.append(helper.make_node("Flatten", [fc_output], ["flat"+suffix], axis=-1))
+    nodes.append(helper.make_node("Shape", ["flat"+suffix], ["flat_shape"+suffix]))
+
+    nodes.append(helper.make_node("Constant", [], ["z"+suffix],
+        value=helper.make_tensor("z_t"+suffix, TensorProto.INT64, [], [0])))
+    nodes.append(helper.make_node("Constant", [], ["one"+suffix],
+        value=helper.make_tensor("one_t"+suffix, TensorProto.INT64, [], [1])))
+    nodes.append(helper.make_node("Constant", [], ["idx0"+suffix],
+        value=helper.make_tensor("idx0_t"+suffix, TensorProto.INT64, [], [0])))
+    nodes.append(helper.make_node("Constant", [], ["idx1"+suffix],
+        value=helper.make_tensor("idx1_t"+suffix, TensorProto.INT64, [], [1])))
+
+    nodes.append(helper.make_node("Gather", ["flat_shape"+suffix, "idx0"+suffix], ["Rdim"+suffix], axis=0))
+    nodes.append(helper.make_node("Gather", ["flat_shape"+suffix, "idx1"+suffix], ["Fdim"+suffix], axis=0))
+
+    nodes.append(helper.make_node("Constant", [], ["blk"+suffix],
+        value=helper.make_tensor("blk_t"+suffix, TensorProto.INT64, [], [block_length])))
+    nodes.append(helper.make_node("Min", ["blk"+suffix, "Rdim"+suffix], ["vblock"+suffix]))
+    nodes.append(helper.make_node("Sub", ["Rdim"+suffix, "vblock"+suffix], ["maxst"+suffix]))
+    nodes.append(helper.make_node("Add", ["maxst"+suffix, "one"+suffix], ["start_count"+suffix]))
+
+    nodes.append(helper.make_node("Cast", ["start_count"+suffix], ["start_count_f"+suffix], to=TensorProto.FLOAT))
+    nodes.append(helper.make_node("RandomUniform", [], ["rstart"+suffix], dtype=TensorProto.FLOAT, high=1.0, low=0.0, shape=[1]))
+    nodes.append(helper.make_node("Mul", ["rstart"+suffix, "start_count_f"+suffix], ["rst_scaled"+suffix]))
+    nodes.append(helper.make_node("Floor", ["rst_scaled"+suffix], ["rst_floor"+suffix]))
+    nodes.append(helper.make_node("Cast", ["rst_floor"+suffix], ["sidx"+suffix], to=TensorProto.INT64))
+
+    nodes.append(helper.make_node("Cast", ["Fdim"+suffix], ["fdim_f"+suffix], to=TensorProto.FLOAT))
+    nodes.append(helper.make_node("RandomUniform", [], ["rfeat"+suffix], dtype=TensorProto.FLOAT, high=1.0, low=0.0, shape=[1]))
+    nodes.append(helper.make_node("Mul", ["rfeat"+suffix, "fdim_f"+suffix], ["rfeat_scaled"+suffix]))
+    nodes.append(helper.make_node("Floor", ["rfeat_scaled"+suffix], ["rfeat_floor"+suffix]))
+    nodes.append(helper.make_node("Cast", ["rfeat_floor"+suffix], ["fsel"+suffix], to=TensorProto.INT64))
+
+    nodes.append(helper.make_node("Range", ["z"+suffix, "Rdim"+suffix, "one"+suffix], ["ridx"+suffix]))
+    nodes.append(helper.make_node("Range", ["z"+suffix, "Fdim"+suffix, "one"+suffix], ["fidx"+suffix]))
+    nodes.append(helper.make_node("Add", ["sidx"+suffix, "vblock"+suffix], ["endidx"+suffix]))
+    nodes.append(helper.make_node("GreaterOrEqual", ["ridx"+suffix, "sidx"+suffix], ["ge"+suffix]))
+    nodes.append(helper.make_node("Less", ["ridx"+suffix, "endidx"+suffix], ["lt"+suffix]))
+    nodes.append(helper.make_node("And", ["ge"+suffix, "lt"+suffix], ["rmask1d"+suffix]))
+    nodes.append(helper.make_node("Equal", ["fidx"+suffix, "fsel"+suffix], ["fmask1d"+suffix]))
+
+    nodes.append(helper.make_node("Constant", [], ["raxes"+suffix],
+        value=helper.make_tensor("raxes_t"+suffix, TensorProto.INT64, [1], [1])))
+    nodes.append(helper.make_node("Constant", [], ["faxes"+suffix],
+        value=helper.make_tensor("faxes_t"+suffix, TensorProto.INT64, [1], [0])))
+    nodes.append(helper.make_node("Unsqueeze", ["rmask1d"+suffix, "raxes"+suffix], ["rmask2d"+suffix]))
+    nodes.append(helper.make_node("Unsqueeze", ["fmask1d"+suffix, "faxes"+suffix], ["fmask2d"+suffix]))
+    nodes.append(helper.make_node("And", ["rmask2d"+suffix, "fmask2d"+suffix], ["mask2d"+suffix]))
+
+    dtype = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
+    nodes.append(helper.make_node("ConstantOfShape", ["flat_shape"+suffix], ["zeros2d"+suffix],
+        value=helper.make_tensor("zv"+suffix, dtype, [1], [0.0])))
+    nodes.append(helper.make_node("Where", ["mask2d"+suffix, "flat"+suffix, "zeros2d"+suffix], ["masked_flat"+suffix]))
+    nodes.append(helper.make_node("Reshape", ["masked_flat"+suffix, "shape"+suffix], [masked_output]))
+
+    return nodes
+
 def create_random_fault_injection(output_name: str, random_value: float, fp16: bool = True,
                                   rand_idx_name: str = "rand_idx_inject"):
     nodes = []
@@ -981,62 +1124,69 @@ def create_random_bitflip_fp32(output_name,
 # -------------------------------------------------------------
 
 def create_conv_input16_mask(conv_output="y", masked_output="y_masked", block_length=16, fp16=True):
-    """Keep 16 consecutive channels across all spatial positions.
+    """Keep one NVDLA INPUT16 Conv faulty-neuron group.
 
-    Input tensor assumed NCHW. Mask selects a slice along C of length
-    min(block_length, C) starting at a random channel index, and
-    broadcasts over N,H,W.
+    For NCHW Conv outputs, FIdelity Table II describes the INPUT16
+    datapath model as 16 neurons at the same 2D matrix position spanning
+    16 consecutive output channels.
     """
     nodes = []
     suffix = "_cim"
 
-    # 1. shape
     nodes.append(helper.make_node("Shape", [conv_output], ["shape"+suffix]))
 
-    # gather C dim (index 1)
-    nodes.append(helper.make_node("Constant", [], ["idx1"+suffix],
-        value=helper.make_tensor("idx1_t"+suffix, TensorProto.INT64, [], [1])))
-    nodes.append(helper.make_node("Gather", ["shape"+suffix, "idx1"+suffix], ["Cdim"+suffix], axis=0))
+    for idx, dim in [(0, "N"), (1, "C"), (2, "H"), (3, "W")]:
+        nodes.append(helper.make_node("Constant", [], [f"idx{idx}{suffix}"],
+            value=helper.make_tensor(f"idx{idx}_t{suffix}", TensorProto.INT64, [], [idx])))
+        nodes.append(helper.make_node("Gather", ["shape"+suffix, f"idx{idx}{suffix}"], [f"{dim}dim{suffix}"], axis=0))
 
-    # valid block = min(block_length, C)
     nodes.append(helper.make_node("Constant", [], ["blk"+suffix],
         value=helper.make_tensor("blk_t"+suffix, TensorProto.INT64, [], [block_length])))
     nodes.append(helper.make_node("Min", ["blk"+suffix, "Cdim"+suffix], ["vblock"+suffix]))
 
-    # max_start = C - vblock
     nodes.append(helper.make_node("Sub", ["Cdim"+suffix, "vblock"+suffix], ["maxst"+suffix]))
+    nodes.append(helper.make_node("Constant", [], ["one"+suffix],
+        value=helper.make_tensor("one_t"+suffix, TensorProto.INT64, [], [1])))
+    nodes.append(helper.make_node("Add", ["maxst"+suffix, "one"+suffix], ["start_count"+suffix]))
 
-    # random start
-    nodes.append(helper.make_node("Cast", ["maxst"+suffix], ["maxst_f"+suffix], to=TensorProto.FLOAT))
+    nodes.append(helper.make_node("Cast", ["start_count"+suffix], ["start_count_f"+suffix], to=TensorProto.FLOAT))
     nodes.append(helper.make_node("RandomUniform", [], ["rstart"+suffix], dtype=TensorProto.FLOAT, high=1.0, low=0.0, shape=[1]))
-    nodes.append(helper.make_node("Mul", ["rstart"+suffix, "maxst_f"+suffix], ["rst_scaled"+suffix]))
+    nodes.append(helper.make_node("Mul", ["rstart"+suffix, "start_count_f"+suffix], ["rst_scaled"+suffix]))
     nodes.append(helper.make_node("Floor", ["rst_scaled"+suffix], ["rst_floor"+suffix]))
     nodes.append(helper.make_node("Cast", ["rst_floor"+suffix], ["sidx"+suffix], to=TensorProto.INT64))
 
-    # build channel indices 0..C-1
-    nodes.append(helper.make_node("Range", inputs=["zero_scalar"+suffix if False else None], outputs=[]))
-    # but we need zero_scalar const and one_scalar
     nodes.append(helper.make_node("Constant", [], ["z"+suffix], value=helper.make_tensor("z"+suffix, TensorProto.INT64, [], [0])))
-    nodes.append(helper.make_node("Constant", [], ["one"+suffix], value=helper.make_tensor("one"+suffix, TensorProto.INT64, [], [1])))
-    nodes.append(helper.make_node("Range", ["z"+suffix, "Cdim"+suffix, "one"+suffix], ["cidx"+suffix]))
+    for dim in ["N", "C", "H", "W"]:
+        nodes.append(helper.make_node("Range", ["z"+suffix, f"{dim}dim{suffix}", "one"+suffix], [f"{dim.lower()}idx{suffix}"]))
 
-    # boolean mask: cidx >= sidx AND cidx < sidx+vblock
+    for dim in ["N", "H", "W"]:
+        nodes.append(helper.make_node("Cast", [f"{dim}dim{suffix}"], [f"{dim.lower()}dim_f{suffix}"], to=TensorProto.FLOAT))
+        nodes.append(helper.make_node("RandomUniform", [], [f"r{dim.lower()}{suffix}"], dtype=TensorProto.FLOAT, high=1.0, low=0.0, shape=[1]))
+        nodes.append(helper.make_node("Mul", [f"r{dim.lower()}{suffix}", f"{dim.lower()}dim_f{suffix}"], [f"r{dim.lower()}_scaled{suffix}"]))
+        nodes.append(helper.make_node("Floor", [f"r{dim.lower()}_scaled{suffix}"], [f"r{dim.lower()}_floor{suffix}"]))
+        nodes.append(helper.make_node("Cast", [f"r{dim.lower()}_floor{suffix}"], [f"{dim.lower()}sel{suffix}"], to=TensorProto.INT64))
+
+    nodes.append(helper.make_node("Equal", ["nidx"+suffix, "nsel"+suffix], ["nmask1d"+suffix]))
+    nodes.append(helper.make_node("Equal", ["hidx"+suffix, "hsel"+suffix], ["hmask1d"+suffix]))
+    nodes.append(helper.make_node("Equal", ["widx"+suffix, "wsel"+suffix], ["wmask1d"+suffix]))
+
     nodes.append(helper.make_node("Add", ["sidx"+suffix, "vblock"+suffix], ["endidx"+suffix]))
     nodes.append(helper.make_node("GreaterOrEqual", ["cidx"+suffix, "sidx"+suffix], ["ge"+suffix]))
     nodes.append(helper.make_node("Less", ["cidx"+suffix, "endidx"+suffix], ["lt"+suffix]))
-    nodes.append(helper.make_node("And", ["ge"+suffix, "lt"+suffix], ["mask1d"+suffix]))
+    nodes.append(helper.make_node("And", ["ge"+suffix, "lt"+suffix], ["cmask1d"+suffix]))
 
-    # reshape to broadcast [1,C,1,1]
-    nodes.append(helper.make_node("Constant", [], ["shape4"+suffix], value=helper.make_tensor("shape4t"+suffix, TensorProto.INT64, [4], [1,0,1,1])))
-    # The 0 will be replaced by C via ScatterND
-    nodes.append(helper.make_node("ConstantOfShape", ["shape4"+suffix], ["shapevec"+suffix], value=helper.make_tensor("sv"+suffix, TensorProto.INT64, [1], [1])))
-    # scatter
-    nodes.append(helper.make_node("Constant", [], ["axis1"+suffix], value=helper.make_tensor("ax1"+suffix, TensorProto.INT64, [1], [1])))
-    nodes.append(helper.make_node("Unsqueeze", ["idx1"+suffix, "axis1"+suffix], ["idx1u"+suffix]))
-    nodes.append(helper.make_node("ScatterND", ["shapevec"+suffix, "idx1u"+suffix, "Cdim"+suffix], ["bshape"+suffix]))
-    nodes.append(helper.make_node("Reshape", ["mask1d"+suffix, "bshape"+suffix], ["mask4d"+suffix]))
+    nodes.append(helper.make_node("Constant", [], ["naxes"+suffix], value=helper.make_tensor("naxes_t"+suffix, TensorProto.INT64, [3], [1, 2, 3])))
+    nodes.append(helper.make_node("Constant", [], ["caxes"+suffix], value=helper.make_tensor("caxes_t"+suffix, TensorProto.INT64, [3], [0, 2, 3])))
+    nodes.append(helper.make_node("Constant", [], ["haxes"+suffix], value=helper.make_tensor("haxes_t"+suffix, TensorProto.INT64, [3], [0, 1, 3])))
+    nodes.append(helper.make_node("Constant", [], ["waxes"+suffix], value=helper.make_tensor("waxes_t"+suffix, TensorProto.INT64, [3], [0, 1, 2])))
+    nodes.append(helper.make_node("Unsqueeze", ["nmask1d"+suffix, "naxes"+suffix], ["nmask4d"+suffix]))
+    nodes.append(helper.make_node("Unsqueeze", ["cmask1d"+suffix, "caxes"+suffix], ["cmask4d"+suffix]))
+    nodes.append(helper.make_node("Unsqueeze", ["hmask1d"+suffix, "haxes"+suffix], ["hmask4d"+suffix]))
+    nodes.append(helper.make_node("Unsqueeze", ["wmask1d"+suffix, "waxes"+suffix], ["wmask4d"+suffix]))
+    nodes.append(helper.make_node("And", ["nmask4d"+suffix, "cmask4d"+suffix], ["mask_nc"+suffix]))
+    nodes.append(helper.make_node("And", ["hmask4d"+suffix, "wmask4d"+suffix], ["mask_hw"+suffix]))
+    nodes.append(helper.make_node("And", ["mask_nc"+suffix, "mask_hw"+suffix], ["mask4d"+suffix]))
 
-    # zeros tensor
     dtype = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
     nodes.append(helper.make_node("ConstantOfShape", ["shape"+suffix], ["zeros"+suffix], value=helper.make_tensor("zv"+suffix, dtype, [1], [0.0])))
 
@@ -1046,52 +1196,65 @@ def create_conv_input16_mask(conv_output="y", masked_output="y_masked", block_le
 
 
 def create_conv_weight16_mask(conv_output="y", masked_output="y_masked", block_length=16, fp16=True):
+    """Keep one NVDLA WEIGHT16 Conv faulty-neuron group.
+
+    For NCHW Conv outputs, FIdelity Table II describes the WEIGHT16
+    datapath model as all or a subset of 16 neurons in the same output
+    channel, consecutive in the same row.
+    """
     nodes = []
     suffix = "_cwm"
 
-    # shape
     nodes.append(helper.make_node("Shape", [conv_output], ["shape"+suffix]))
 
-    # Gather H (idx 2) and W (idx3)
-    for idx,val in [(2,"H"), (3,"W")]:
+    for idx, dim in [(0, "N"), (1, "C"), (2, "H"), (3, "W")]:
         nodes.append(helper.make_node("Constant", [], [f"idx{idx}{suffix}"], value=helper.make_tensor(f"i{idx}{suffix}", TensorProto.INT64, [], [idx])))
-        nodes.append(helper.make_node("Gather", ["shape"+suffix, f"idx{idx}{suffix}"], [f"{val}{suffix}"], axis=0))
+        nodes.append(helper.make_node("Gather", ["shape"+suffix, f"idx{idx}{suffix}"], [f"{dim}dim{suffix}"], axis=0))
 
-    # flatten spatial size N = H*W
-    nodes.append(helper.make_node("Mul", ["H"+suffix, "W"+suffix], ["Nsp"+suffix]))
-
-    # valid_block
     nodes.append(helper.make_node("Constant", [], ["blk"+suffix], value=helper.make_tensor("blk_t"+suffix, TensorProto.INT64, [], [block_length])))
-    nodes.append(helper.make_node("Min", ["blk"+suffix, "Nsp"+suffix], ["vblock"+suffix]))
+    nodes.append(helper.make_node("Min", ["blk"+suffix, "Wdim"+suffix], ["vblock"+suffix]))
 
-    nodes.append(helper.make_node("Sub", ["Nsp"+suffix, "vblock"+suffix], ["maxst"+suffix]))
+    nodes.append(helper.make_node("Sub", ["Wdim"+suffix, "vblock"+suffix], ["maxst"+suffix]))
+    nodes.append(helper.make_node("Constant", [], ["one"+suffix], value=helper.make_tensor("1"+suffix, TensorProto.INT64, [], [1])))
+    nodes.append(helper.make_node("Add", ["maxst"+suffix, "one"+suffix], ["start_count"+suffix]))
 
-    nodes.append(helper.make_node("Cast", ["maxst"+suffix], ["maxst_f"+suffix], to=TensorProto.FLOAT))
+    nodes.append(helper.make_node("Cast", ["start_count"+suffix], ["start_count_f"+suffix], to=TensorProto.FLOAT))
     nodes.append(helper.make_node("RandomUniform", [], ["rstart"+suffix], dtype=TensorProto.FLOAT, high=1.0, low=0.0, shape=[1]))
-    nodes.append(helper.make_node("Mul", ["rstart"+suffix, "maxst_f"+suffix], ["rst_scaled"+suffix]))
+    nodes.append(helper.make_node("Mul", ["rstart"+suffix, "start_count_f"+suffix], ["rst_scaled"+suffix]))
     nodes.append(helper.make_node("Floor", ["rst_scaled"+suffix], ["rst_floor"+suffix]))
     nodes.append(helper.make_node("Cast", ["rst_floor"+suffix], ["sidx"+suffix], to=TensorProto.INT64))
 
-    # Build indices 0..Nsp-1
     nodes.append(helper.make_node("Constant", [], ["z"+suffix], value=helper.make_tensor("z"+suffix, TensorProto.INT64, [], [0])))
-    nodes.append(helper.make_node("Constant", [], ["one"+suffix], value=helper.make_tensor("1"+suffix, TensorProto.INT64, [], [1])))
-    nodes.append(helper.make_node("Range", ["z"+suffix, "Nsp"+suffix, "one"+suffix], ["spidx"+suffix]))
+    for dim in ["N", "C", "H", "W"]:
+        nodes.append(helper.make_node("Range", ["z"+suffix, f"{dim}dim{suffix}", "one"+suffix], [f"{dim.lower()}idx{suffix}"]))
+
+    for dim in ["N", "C", "H"]:
+        nodes.append(helper.make_node("Cast", [f"{dim}dim{suffix}"], [f"{dim.lower()}dim_f{suffix}"], to=TensorProto.FLOAT))
+        nodes.append(helper.make_node("RandomUniform", [], [f"r{dim.lower()}{suffix}"], dtype=TensorProto.FLOAT, high=1.0, low=0.0, shape=[1]))
+        nodes.append(helper.make_node("Mul", [f"r{dim.lower()}{suffix}", f"{dim.lower()}dim_f{suffix}"], [f"r{dim.lower()}_scaled{suffix}"]))
+        nodes.append(helper.make_node("Floor", [f"r{dim.lower()}_scaled{suffix}"], [f"r{dim.lower()}_floor{suffix}"]))
+        nodes.append(helper.make_node("Cast", [f"r{dim.lower()}_floor{suffix}"], [f"{dim.lower()}sel{suffix}"], to=TensorProto.INT64))
+
+    nodes.append(helper.make_node("Equal", ["nidx"+suffix, "nsel"+suffix], ["nmask1d"+suffix]))
+    nodes.append(helper.make_node("Equal", ["cidx"+suffix, "csel"+suffix], ["cmask1d"+suffix]))
+    nodes.append(helper.make_node("Equal", ["hidx"+suffix, "hsel"+suffix], ["hmask1d"+suffix]))
 
     nodes.append(helper.make_node("Add", ["sidx"+suffix, "vblock"+suffix], ["endidx"+suffix]))
-    nodes.append(helper.make_node("GreaterOrEqual", ["spidx"+suffix, "sidx"+suffix], ["ge"+suffix]))
-    nodes.append(helper.make_node("Less", ["spidx"+suffix, "endidx"+suffix], ["lt"+suffix]))
-    nodes.append(helper.make_node("And", ["ge"+suffix, "lt"+suffix], ["mask1d"+suffix]))
+    nodes.append(helper.make_node("GreaterOrEqual", ["widx"+suffix, "sidx"+suffix], ["ge"+suffix]))
+    nodes.append(helper.make_node("Less", ["widx"+suffix, "endidx"+suffix], ["lt"+suffix]))
+    nodes.append(helper.make_node("And", ["ge"+suffix, "lt"+suffix], ["wmask1d"+suffix]))
 
-    # reshape to [1,1,H,W]
-    nodes.append(helper.make_node("Constant", [], ["shape4"+suffix], value=helper.make_tensor("sh"+suffix, TensorProto.INT64, [4], [1,1,0,0])))
-    # scatter dims for H,W
-    nodes.append(helper.make_node("Constant", [], ["axes0"+suffix], value=helper.make_tensor("ax0"+suffix, TensorProto.INT64, [1], [2])))
-    nodes.append(helper.make_node("Unsqueeze", [f"idx2{suffix}", "axes0"+suffix], ["idx2u"+suffix]))
-    nodes.append(helper.make_node("ScatterND", ["shape4"+suffix, "idx2u"+suffix, "H"+suffix], ["shape_hw1"+suffix]))
-    nodes.append(helper.make_node("Constant", [], ["axes1"+suffix], value=helper.make_tensor("ax1b"+suffix, TensorProto.INT64, [1], [3])))
-    nodes.append(helper.make_node("Unsqueeze", [f"idx3{suffix}", "axes1"+suffix], ["idx3u"+suffix]))
-    nodes.append(helper.make_node("ScatterND", ["shape_hw1"+suffix, "idx3u"+suffix, "W"+suffix], ["bshape"+suffix]))
-    nodes.append(helper.make_node("Reshape", ["mask1d"+suffix, "bshape"+suffix], ["mask4d"+suffix]))
+    nodes.append(helper.make_node("Constant", [], ["naxes"+suffix], value=helper.make_tensor("naxes_t"+suffix, TensorProto.INT64, [3], [1, 2, 3])))
+    nodes.append(helper.make_node("Constant", [], ["caxes"+suffix], value=helper.make_tensor("caxes_t"+suffix, TensorProto.INT64, [3], [0, 2, 3])))
+    nodes.append(helper.make_node("Constant", [], ["haxes"+suffix], value=helper.make_tensor("haxes_t"+suffix, TensorProto.INT64, [3], [0, 1, 3])))
+    nodes.append(helper.make_node("Constant", [], ["waxes"+suffix], value=helper.make_tensor("waxes_t"+suffix, TensorProto.INT64, [3], [0, 1, 2])))
+    nodes.append(helper.make_node("Unsqueeze", ["nmask1d"+suffix, "naxes"+suffix], ["nmask4d"+suffix]))
+    nodes.append(helper.make_node("Unsqueeze", ["cmask1d"+suffix, "caxes"+suffix], ["cmask4d"+suffix]))
+    nodes.append(helper.make_node("Unsqueeze", ["hmask1d"+suffix, "haxes"+suffix], ["hmask4d"+suffix]))
+    nodes.append(helper.make_node("Unsqueeze", ["wmask1d"+suffix, "waxes"+suffix], ["wmask4d"+suffix]))
+    nodes.append(helper.make_node("And", ["nmask4d"+suffix, "cmask4d"+suffix], ["mask_nc"+suffix]))
+    nodes.append(helper.make_node("And", ["hmask4d"+suffix, "wmask4d"+suffix], ["mask_hw"+suffix]))
+    nodes.append(helper.make_node("And", ["mask_nc"+suffix, "mask_hw"+suffix], ["mask4d"+suffix]))
 
     dtype = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
     nodes.append(helper.make_node("ConstantOfShape", ["shape"+suffix], ["zeros"+suffix], value=helper.make_tensor("zv"+suffix, dtype, [1], [0.0])))
@@ -1099,4 +1262,3 @@ def create_conv_weight16_mask(conv_output="y", masked_output="y_masked", block_l
     nodes.append(helper.make_node("Where", ["mask4d"+suffix, conv_output, "zeros"+suffix], [masked_output]))
     
     return nodes
-

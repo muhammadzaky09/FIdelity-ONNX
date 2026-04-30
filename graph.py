@@ -3,7 +3,7 @@ import onnx
 import onnx_graphsurgeon as gs
 from collections import deque, defaultdict
 from onnx import helper, shape_inference, numpy_helper, TensorProto
-from inject_ops import create_quantized_fault_injection, create_random_bitflip_injection, create_random_fault_injection, create_input16_mask, create_weight16_mask, create_fp16_fault_injection, create_random_bitflip_fp32, create_conv_input16_mask, create_conv_weight16_mask
+from inject_ops import create_quantized_fault_injection, create_random_bitflip_injection, create_random_fault_injection, create_input16_mask, create_weight16_mask, create_fp16_fault_injection, create_random_bitflip_fp32, create_conv_input16_mask, create_conv_weight16_mask, create_fc_input16_mask, create_fc_weight16_mask
 from typing import List, Dict, Set
 from itertools import chain
 import numpy as np
@@ -474,8 +474,15 @@ def modify_onnx_graph(config,
                 else:
                     m_nodes = create_conv_weight16_mask(
                         cloned_tgt_out_name, f"{cloned_tgt_out_name}_masked", 16, fp16=fp16_flag)
+            elif tgt_node.op in {"Linear", "FullyConnected", "Gemm"} or config.get("layer_type") == "FC":
+                if "INPUT" in fault_model:
+                    m_nodes = create_fc_input16_mask(
+                        cloned_tgt_out_name, f"{cloned_tgt_out_name}_masked", 16, fp16=fp16_flag)
+                else:
+                    m_nodes = create_fc_weight16_mask(
+                        cloned_tgt_out_name, f"{cloned_tgt_out_name}_masked", 16, fp16=fp16_flag)
             else:
-                # MatMul / linear path
+                # MatMul path
                 if "INPUT" in fault_model:
                     m_nodes = create_input16_mask(
                         cloned_tgt_out_name, f"{cloned_tgt_out_name}_masked", 16, fp16=fp16_flag)
@@ -604,6 +611,5 @@ def modify_onnx_graph(config,
     # fault_model = "INPUT"
     # bit_position = 7   # high-impact bit (MSB of exponent); survives INT8 quantization
     # modify_onnx_graph(config, model_config, fault_model)
-
 
 

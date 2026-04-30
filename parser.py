@@ -48,14 +48,23 @@ def resolve_starting_point(graph, tensor_name: str) -> str:
     return round_output if round_output is not None else tensor_name
 
 
-def parse_matmul_nodes(model_path: str, ops: list[str]):
+def layer_type_for_op(op_type: str) -> str:
+    if op_type == "Conv":
+        return "Conv"
+    if op_type in {"Gemm", "Linear", "FullyConnected"}:
+        return "FC"
+    return "MatMul"
+
+
+def parse_target_nodes(model_path: str, ops: list[str]):
     """
-    Scan *model_path* for nodes whose op_type is in *ops* (default: MatMul).
+    Scan *model_path* for nodes whose op_type is in *ops*.
 
     For each node:
     - target_layer  = node.name if set, else node.output[0] (output tensor name).
     - input_tensor  = resolved starting point for node.input[0].
     - weight_tensor = resolved starting point for node.input[1].
+    - layer_type    = MatMul, Conv, or FC.
 
     Returns a list of config dicts ready to be passed to modify_onnx_graph.
     """
@@ -92,13 +101,17 @@ def parse_matmul_nodes(model_path: str, ops: list[str]):
             "target_layer":   target_layer,
             "input_tensor":   input_tensor,
             "weight_tensor":  weight_tensor,
+            "layer_type":     layer_type_for_op(node.op_type),
         })
 
-        print(f"  [{node.op_type}] {target_layer}")
+        print(f"  [{node.op_type} / {layer_type_for_op(node.op_type)}] {target_layer}")
         print(f"    input_tensor  : {input_tensor}")
         print(f"    weight_tensor : {weight_tensor}")
 
     return results
+
+
+parse_matmul_nodes = parse_target_nodes
 
 
 def save_configs(configs: list[dict], output_dir: str):
@@ -120,8 +133,8 @@ def save_configs(configs: list[dict], output_dir: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
-            "Parse ONNX files and generate one JSON injection config per MatMul "
-            "(or other op) node.  Automatically detects quantized vs float models "
+            "Parse ONNX files and generate one JSON injection config per target "
+            "MatMul, Conv, or FC-like node.  Automatically detects quantized vs float models "
             "by tracing inputs backward to Round nodes."
         )
     )
@@ -137,8 +150,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ops",
         nargs="+",
-        default=["MatMul"],
-        help="Op types to target (default: MatMul).  Example: --ops MatMul Conv",
+        default=["MatMul", "Conv", "Gemm", "Linear", "FullyConnected"],
+        help="Op types to target (default: MatMul Conv Gemm Linear FullyConnected).",
     )
     args = parser.parse_args()
 
@@ -151,7 +164,7 @@ if __name__ == "__main__":
     total = 0
     for model_path in onnx_files:
         print(f"\nProcessing {model_path}")
-        configs = parse_matmul_nodes(model_path, ops=args.ops)
+        configs = parse_target_nodes(model_path, ops=args.ops)
         save_configs(configs, args.output_dir)
         total += len(configs)
 
