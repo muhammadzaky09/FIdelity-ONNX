@@ -123,10 +123,11 @@ def _make_qdq_activation_value_model(model_path: str) -> None:
         [1, 1, 2, 2],
         np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32),
     )
+    b_init = helper.make_tensor("B", TensorProto.FLOAT, [1], [2.5])
 
     nodes = [
         helper.make_node("DequantizeLinear", ["X_q", "scale", "zp"], ["X_dq"], name="input_dq"),
-        helper.make_node("Conv", ["X_dq", "W"], ["Y"], name="test_conv"),
+        helper.make_node("Conv", ["X_dq", "W", "B"], ["Y"], name="test_conv"),
     ]
     graph = helper.make_graph(
         nodes,
@@ -135,6 +136,7 @@ def _make_qdq_activation_value_model(model_path: str) -> None:
         [y],
         [
             w_init,
+            b_init,
             helper.make_tensor("scale", TensorProto.FLOAT, [], [0.5]),
             helper.make_tensor("zp", TensorProto.UINT8, [], [10]),
         ],
@@ -156,7 +158,7 @@ def _make_qdq_weight_value_model(model_path: str) -> None:
     nodes = [
         helper.make_node("Identity", ["X_raw"], ["X"], name="input_identity"),
         helper.make_node("DequantizeLinear", ["W_q", "w_scale", "w_zp"], ["W_dq"], name="weight_dq", axis=0),
-        helper.make_node("Conv", ["X", "W_dq"], ["Y"], name="test_conv"),
+        helper.make_node("Conv", ["X", "W_dq", "B"], ["Y"], name="test_conv"),
     ]
     graph = helper.make_graph(
         nodes,
@@ -167,6 +169,7 @@ def _make_qdq_weight_value_model(model_path: str) -> None:
             helper.make_tensor("W_q", TensorProto.INT8, list(w_q.shape), w_q.flatten()),
             helper.make_tensor("w_scale", TensorProto.FLOAT, [2], [0.25, 0.5]),
             helper.make_tensor("w_zp", TensorProto.INT8, [2], [0, 0]),
+            helper.make_tensor("B", TensorProto.FLOAT, [2], [1.0, -3.0]),
         ],
     )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)])
@@ -258,7 +261,7 @@ def test_qdq_conv_input_injection_matches_dequantized_delta_reference():
         x_faulty_q = x_q.copy()
         x_faulty_q.flat[rand_idx] = _flip_uint8(x_faulty_q.flat[rand_idx], bit_position)
         x_faulty = (x_faulty_q.astype(np.float32) - np.float32(zp)) * scale
-        expected = _conv2d_nchw(x, w) + _conv2d_nchw(x_faulty - x, w)
+        expected = _conv2d_nchw(x, w) + np.float32(2.5) + _conv2d_nchw(x_faulty - x, w)
 
         actual = _run_model(output_path, {
             "X_q": x_q,
@@ -301,7 +304,8 @@ def test_qdq_conv_weight_injection_matches_dequantized_delta_reference():
         w_faulty_q = w_q.copy()
         w_faulty_q.flat[rand_idx] = _flip_int8(w_faulty_q.flat[rand_idx], bit_position)
         w_faulty = w_faulty_q.astype(np.float32) * scale
-        expected = _conv2d_nchw(x, w) + _conv2d_nchw(x, w_faulty - w)
+        bias = np.array([1.0, -3.0], dtype=np.float32).reshape(1, 2, 1, 1)
+        expected = _conv2d_nchw(x, w) + bias + _conv2d_nchw(x, w_faulty - w)
 
         actual = _run_model(output_path, {
             "X_raw": x,

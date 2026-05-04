@@ -11,7 +11,6 @@ def create_quantized_fault_injection(input_name, output_name,
     nodes = []
     suffix   = "_inject"
     int_type = TensorProto.INT8   if is_signed else TensorProto.UINT8
-    prec     = TensorProto.FLOAT16 if fp16     else TensorProto.FLOAT
 
     # 1) Cast original to int
     nodes.append(helper.make_node(
@@ -180,7 +179,7 @@ def create_quantized_fault_injection(input_name, output_name,
         outputs=["flipped_int" + suffix]
     ))
 
-    # 13) Compute perturbation = flipped - original
+    # 13) Compute INT32 perturbation = flipped - original
     nodes.append(helper.make_node(
         "Cast",
         inputs=["flipped_int" + suffix],
@@ -196,15 +195,7 @@ def create_quantized_fault_injection(input_name, output_name,
     nodes.append(helper.make_node(
         "Sub",
         inputs=["flipped_i32" + suffix, "orig_i32" + suffix],
-        outputs=["perturb_i32" + suffix]
-    ))
-
-    # 14) Cast perturbation back to float16/float
-    nodes.append(helper.make_node(
-        "Cast",
-        inputs=["perturb_i32" + suffix],
         outputs=[output_name],
-        to=prec
     ))
 
     return nodes

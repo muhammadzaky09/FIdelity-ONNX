@@ -359,6 +359,9 @@ def modify_onnx_graph(config,
                         cloned_inputs.append(created_tensors[mapped_name])
                     else:
                         cloned_inputs.append(inp)
+
+            if node is tgt_node and node.op == "Conv" and len(cloned_inputs) > 2:
+                cloned_inputs = cloned_inputs[:2]
             
             # Map outputs
             cloned_outputs = []
@@ -395,12 +398,15 @@ def modify_onnx_graph(config,
 
         # Build the tensor delta consumed by the cloned path.
         #
-        # Legacy fake-quant starts at Round output:
-        #   q -> create_quantized_fault_injection -> q_delta
+        # create_quantized_fault_injection returns an INT32 quantized delta.
+        #
+        # Legacy fake-quant starts at Round output and the cloned path expects
+        # a float tensor delta:
+        #   q -> q_delta_i32 -> Cast(float/fp16) -> cloned_src_out
         #
         # Q/DQ CNNs start at DequantizeLinear output, but the bit flip belongs
         # on DequantizeLinear.input[0]:
-        #   q -> q_delta -> q_faulty -> DequantizeLinear(q_faulty) - DequantizeLinear(q)
+        #   q -> q_delta_i32 -> q_faulty -> DequantizeLinear(q_faulty) - DequantizeLinear(q)
         # The result is still a float delta at cloned_src_out_name, so the
         # cloned Conv/MatMul path below can stay unchanged.
         if prec == 'float16':
@@ -441,7 +447,6 @@ def modify_onnx_graph(config,
                         f"for tensor '{q_name}'"
                     )
 
-                q_delta_name = f"{q_name}{clone_suffix}_qdelta"
                 q_orig_i32_name = f"{q_name}{clone_suffix}_orig_i32"
                 q_delta_i32_name = f"{q_name}{clone_suffix}_delta_i32"
                 q_faulty_i32_name = f"{q_name}{clone_suffix}_faulty_i32"
@@ -449,13 +454,12 @@ def modify_onnx_graph(config,
                 dq_faulty_name = f"{src_out_name}{clone_suffix}_faulty_full"
 
                 inj_nodes = create_quantized_fault_injection(
-                    q_name, q_delta_name,
+                    q_name, q_delta_i32_name,
                     fp16=False, is_signed=is_signed,
                     rand_idx_name="rand_idx_inject",
                     bit_pos_name="bit_pos_inject")
                 inj_nodes.extend([
                     helper.make_node("Cast", [q_name], [q_orig_i32_name], to=TensorProto.INT32),
-                    helper.make_node("Cast", [q_delta_name], [q_delta_i32_name], to=TensorProto.INT32),
                     helper.make_node("Add", [q_orig_i32_name, q_delta_i32_name], [q_faulty_i32_name]),
                     helper.make_node("Cast", [q_faulty_i32_name], [q_faulty_name], to=quant_type),
                     helper.make_node(
@@ -466,12 +470,19 @@ def modify_onnx_graph(config,
                     helper.make_node("Sub", [dq_faulty_name, src_out_name], [cloned_src_out_name]),
                 ])
             else:
+                q_delta_i32_name = f"{cloned_src_out_name}_i32"
                 inj_nodes = create_quantized_fault_injection(
-                    src_out_name, cloned_src_out_name,
+                    src_out_name, q_delta_i32_name,
                     fp16=fp16_flag,
                     is_signed=(prec == 'int8'),
                     rand_idx_name="rand_idx_inject",
                     bit_pos_name="bit_pos_inject")
+                inj_nodes.append(helper.make_node(
+                    "Cast",
+                    [q_delta_i32_name],
+                    [cloned_src_out_name],
+                    to=TensorProto.FLOAT16 if fp16_flag else TensorProto.FLOAT,
+                ))
         else:
             raise ValueError("Unsupported precision")
         

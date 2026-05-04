@@ -1,9 +1,9 @@
 """
 Unit test for create_quantized_fault_injection.
 
-The function outputs a float *delta* tensor:
-    delta[rand_idx] = float((int8(x[rand_idx]) XOR (1 << bit_pos)) - int8(x[rand_idx]))
-    delta[i]        = 0.0  for all i != rand_idx
+The function outputs an INT32 *delta* tensor:
+    delta[rand_idx] = (int8(x[rand_idx]) XOR (1 << bit_pos)) - int8(x[rand_idx])
+    delta[i]        = 0  for all i != rand_idx
 
 Verification:
   1. Exactly one element of delta is non-zero (at rand_idx).
@@ -27,7 +27,7 @@ def build_model(input_shape, bit_position, rand_idx_name, fp16=False, is_signed=
     x_vi   = helper.make_tensor_value_info("x",           prec,              input_shape)
     ri_vi  = helper.make_tensor_value_info(rand_idx_name, TensorProto.INT64, [])
     bp_vi  = helper.make_tensor_value_info("bit_pos_inject", TensorProto.INT32, [])
-    out_vi = helper.make_tensor_value_info("delta",        prec,              input_shape)
+    out_vi = helper.make_tensor_value_info("delta",        TensorProto.INT32, input_shape)
 
     inj_nodes = create_quantized_fault_injection(
         input_name="x",
