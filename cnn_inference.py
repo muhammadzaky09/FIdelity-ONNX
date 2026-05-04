@@ -31,11 +31,45 @@ def load_image(dataset_name, sample_idx):
             transforms.Normalize((0.1307,), (0.3081,)),
         ])
         dataset = datasets.MNIST(root="./data", train=False, download=True, transform=transform)
+    elif dataset_name == "imagenet":
+        return load_imagenet_image(sample_idx)
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
 
     image, label = dataset[sample_idx]
     return image.unsqueeze(0).numpy().astype(np.float32), int(label)
+
+
+def load_imagenet_image(sample_idx):
+    from datasets import Dataset
+
+    if sample_idx < 0:
+        raise ValueError(f"sample_idx must be non-negative, got {sample_idx}")
+
+    transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])
+
+    remaining = sample_idx
+    shard_paths = sorted(Path("data").glob("**/imagenet-1k-validation-*.arrow"))
+    if not shard_paths:
+        raise FileNotFoundError("No local ImageNet validation Arrow shards found under data/")
+
+    for shard_path in shard_paths:
+        dataset = Dataset.from_file(str(shard_path))
+        shard_rows = len(dataset)
+        if remaining >= shard_rows:
+            remaining -= shard_rows
+            continue
+
+        row = dataset[int(remaining)]
+        image = transform(row["image"].convert("RGB"))
+        return image.unsqueeze(0).numpy().astype(np.float32), int(row["label"])
+
+    raise IndexError(f"ImageNet validation sample_idx {sample_idx} is out of range")
 
 
 def make_session(model_path, provider, needs_bitflip=False, needs_extensions=False):
@@ -131,7 +165,7 @@ def main():
     parser = argparse.ArgumentParser(description="CNN single-image fault-injection inference")
     parser.add_argument("--config_dir", required=True,
                         help="Directory containing layer JSON configs from parser.py")
-    parser.add_argument("--dataset", choices=["mnist", "cifar10"], required=True)
+    parser.add_argument("--dataset", choices=["mnist", "cifar10", "imagenet"], required=True)
     parser.add_argument("--sample_idx", type=int, default=0,
                         help="Test-set image index to run (default: 0)")
     parser.add_argument("--precision", default="int8",

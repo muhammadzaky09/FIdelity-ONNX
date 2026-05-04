@@ -41,8 +41,12 @@ def resolve_starting_point(graph, tensor_name: str) -> str:
     Return the best injection starting point for *tensor_name*.
 
     Strategy (auto-detect, no precision flag needed):
-      1. Try tracing backward to a Round node (quantized / INT8 models).
-      2. If not found, use *tensor_name* directly (float FP16/FP32 models).
+      1. Try tracing backward to a Round node (legacy fake-quant models).
+      2. If not found, use *tensor_name* directly.
+
+    Standard Q/DQ CNN models intentionally fall through to step 2.  Their Conv
+    inputs are DequantizeLinear outputs, and graph.py adapts those to the real
+    integer bitflip source: DequantizeLinear.input[0].
     """
     round_output = trace_tensor_to_round(graph, tensor_name)
     return round_output if round_output is not None else tensor_name
@@ -71,9 +75,6 @@ def parse_target_nodes(model_path: str, ops: list[str]):
     model = onnx.load(model_path)
     graph = model.graph
 
-    # Set of initializer names for quick lookup
-    init_names = {init.name for init in graph.initializer}
-
     results = []
 
     for node in graph.node:
@@ -92,8 +93,9 @@ def parse_target_nodes(model_path: str, ops: list[str]):
             continue
 
         input_tensor  = resolve_starting_point(graph, input0)
-        # Initializer weights have no producer node; resolve_starting_point
-        # will just return the name as-is (correct behaviour for graph.py).
+        # Q/DQ weights remain at DequantizeLinear output here; graph.py detects
+        # that source node and injects at its integer input. Initializer weights
+        # without a producer remain as-is.
         weight_tensor = resolve_starting_point(graph, input1)
 
         results.append({
@@ -135,7 +137,8 @@ if __name__ == "__main__":
         description=(
             "Parse ONNX files and generate one JSON injection config per target "
             "MatMul, Conv, or FC-like node.  Automatically detects quantized vs float models "
-            "by tracing inputs backward to Round nodes."
+            "by tracing legacy fake-quant inputs backward to Round nodes. Q/DQ models "
+            "remain at DequantizeLinear outputs for graph.py to adapt."
         )
     )
     parser.add_argument(

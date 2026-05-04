@@ -393,24 +393,85 @@ def modify_onnx_graph(config,
         created_tensors["rand_idx_inject"] = rand_idx_var
         created_tensors["bit_pos_inject"]  = bit_pos_var
 
-        if prec == 'int8':
-            inj_nodes = create_quantized_fault_injection(
-                src_out_name, cloned_src_out_name,
-                fp16=fp16_flag, is_signed=True,
-                rand_idx_name="rand_idx_inject",
-                bit_pos_name="bit_pos_inject")
-        elif prec == 'int4':
-            inj_nodes = create_quantized_fault_injection(
-                src_out_name, cloned_src_out_name,
-                fp16=fp16_flag, is_signed=False,
-                rand_idx_name="rand_idx_inject",
-                bit_pos_name="bit_pos_inject")
-        elif prec == 'float16':
+        # Build the tensor delta consumed by the cloned path.
+        #
+        # Legacy fake-quant starts at Round output:
+        #   q -> create_quantized_fault_injection -> q_delta
+        #
+        # Q/DQ CNNs start at DequantizeLinear output, but the bit flip belongs
+        # on DequantizeLinear.input[0]:
+        #   q -> q_delta -> q_faulty -> DequantizeLinear(q_faulty) - DequantizeLinear(q)
+        # The result is still a float delta at cloned_src_out_name, so the
+        # cloned Conv/MatMul path below can stay unchanged.
+        if prec == 'float16':
             inj_nodes = create_fp16_fault_injection(
                 src_out_name, cloned_src_out_name,
                 fp32=not fp16_flag,
                 rand_idx_name="rand_idx_inject",
                 bit_pos_name="bit_pos_inject")
+        elif prec in {'int8', 'int4'}:
+            qdq_source = not initializer_src and src_node.op == "DequantizeLinear"
+            if qdq_source:
+                q_tensor = src_node.inputs[0]
+                q_name = q_tensor.name
+
+                q_dtype = getattr(q_tensor, "dtype", None)
+                if q_dtype is None and hasattr(q_tensor, "values") and q_tensor.values is not None:
+                    q_dtype = q_tensor.values.dtype
+                if q_dtype is None:
+                    for producer in graph.nodes:
+                        if q_tensor in producer.outputs and producer.op == "Cast":
+                            q_dtype = producer.attrs.get("to")
+                            break
+                if q_dtype is None and len(src_node.inputs) > 2:
+                    zero_point = src_node.inputs[2]
+                    q_dtype = getattr(zero_point, "dtype", None)
+                    if q_dtype is None and hasattr(zero_point, "values") and zero_point.values is not None:
+                        q_dtype = zero_point.values.dtype
+
+                if q_dtype in {TensorProto.INT8, np.int8, np.dtype(np.int8)}:
+                    is_signed = True
+                    quant_type = TensorProto.INT8
+                elif q_dtype in {TensorProto.UINT8, np.uint8, np.dtype(np.uint8)}:
+                    is_signed = False
+                    quant_type = TensorProto.UINT8
+                else:
+                    raise ValueError(
+                        f"Q/DQ injection expects INT8 or UINT8 quantized tensor, got {q_dtype} "
+                        f"for tensor '{q_name}'"
+                    )
+
+                q_delta_name = f"{q_name}{clone_suffix}_qdelta"
+                q_orig_i32_name = f"{q_name}{clone_suffix}_orig_i32"
+                q_delta_i32_name = f"{q_name}{clone_suffix}_delta_i32"
+                q_faulty_i32_name = f"{q_name}{clone_suffix}_faulty_i32"
+                q_faulty_name = f"{q_name}{clone_suffix}_faulty"
+                dq_faulty_name = f"{src_out_name}{clone_suffix}_faulty_full"
+
+                inj_nodes = create_quantized_fault_injection(
+                    q_name, q_delta_name,
+                    fp16=False, is_signed=is_signed,
+                    rand_idx_name="rand_idx_inject",
+                    bit_pos_name="bit_pos_inject")
+                inj_nodes.extend([
+                    helper.make_node("Cast", [q_name], [q_orig_i32_name], to=TensorProto.INT32),
+                    helper.make_node("Cast", [q_delta_name], [q_delta_i32_name], to=TensorProto.INT32),
+                    helper.make_node("Add", [q_orig_i32_name, q_delta_i32_name], [q_faulty_i32_name]),
+                    helper.make_node("Cast", [q_faulty_i32_name], [q_faulty_name], to=quant_type),
+                    helper.make_node(
+                        "DequantizeLinear",
+                        [q_faulty_name] + [inp.name for inp in src_node.inputs[1:]],
+                        [dq_faulty_name],
+                        **src_node.attrs),
+                    helper.make_node("Sub", [dq_faulty_name, src_out_name], [cloned_src_out_name]),
+                ])
+            else:
+                inj_nodes = create_quantized_fault_injection(
+                    src_out_name, cloned_src_out_name,
+                    fp16=fp16_flag,
+                    is_signed=(prec == 'int8'),
+                    rand_idx_name="rand_idx_inject",
+                    bit_pos_name="bit_pos_inject")
         else:
             raise ValueError("Unsupported precision")
         
@@ -611,5 +672,3 @@ def modify_onnx_graph(config,
     # fault_model = "INPUT"
     # bit_position = 7   # high-impact bit (MSB of exponent); survives INT8 quantization
     # modify_onnx_graph(config, model_config, fault_model)
-
-

@@ -16,3 +16,4 @@ onnx-cuda-bitflip/build/
 onnx-cuda-bitflip/libonnxruntime.so.1
 onnx-cuda-bitflip/python/onnx_bitflip.so
 onnx-cuda-bitflip/python/onnx_bitflip_cuda.so
+data/
