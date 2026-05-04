@@ -1,7 +1,7 @@
 # graph.py
 
-Modifies a single ONNX decoder file by inserting fault injection subgraph nodes
-around the output of a target MatMul/Conv layer.
+Modifies a single ONNX file by inserting fault injection subgraph nodes around
+the output of a target MatMul, Conv, or FC-like layer.
 
 ---
 
@@ -19,16 +19,17 @@ and returns the output path.
 | Key | Required for | Description |
 |-----|-------------|-------------|
 | `model_name` | all | Path to the source ONNX file |
-| `target_layer` | all | Node name substring **or** output tensor name of the target MatMul/Conv |
+| `target_layer` | all | Node name substring **or** output tensor name of the target MatMul, Conv, or FC-like layer |
 | `input_tensor` | INPUT / INPUT16 / WEIGHT / WEIGHT16 | Name of the activation tensor fed into the target layer |
 | `weight_tensor` | WEIGHT / WEIGHT16 | Name of the weight tensor (initializer or node output) |
+| `layer_type` | optional | Parser hint used to select FC-specific masks; values are `MatMul`, `Conv`, or `FC` |
 | `output_path` | optional | Override output file path |
 
 ### `model_config` keys
 
 | Key | Values |
 |-----|--------|
-| `precision` | `"int8"` / `"float16"` / `"float32"` |
+| `precision` | `"int8"` / `"int4"` / `"float16"` / `"float32"` |
 
 ---
 
@@ -51,9 +52,10 @@ The patched model is then loaded into a GraphSurgeon (`gs`) graph for manipulati
 
 **Target lookup**
 
-The target node is found by iterating `graph.nodes` and matching `config["target_layer"]`
-as either a **substring of `node.name`** or an **exact match of any output tensor name**.
-Only `MatMul`, `Conv`, `Linear`, and `FullyConnected` ops are considered.
+The target node is found by iterating `graph.nodes` and matching
+`config["target_layer"]` as either a **substring of `node.name`** or an
+**exact match of any output tensor name**. Only `MatMul`, `Conv`, `Linear`, and
+`FullyConnected` ops are considered on this direct replacement path.
 
 **Injection node conversion**
 
@@ -154,6 +156,12 @@ delta = perturbed(src_out) − src_out
 
 producing `src_out_fault_injected` as a delta tensor with the same dtype as `src_out`.
 
+For standard Q/DQ CNNs, `parser.py` leaves Conv inputs or weights at the
+`DequantizeLinear` output. If the source node is `DequantizeLinear`,
+`modify_onnx_graph` injects into its integer input, dequantizes the faulty value
+through a cloned `DequantizeLinear`, and subtracts the original dequantized tensor
+to produce the float delta consumed by the cloned Conv path.
+
 **Graph insertion — position**
 
 Injection nodes are inserted right after `src_node`:
@@ -166,10 +174,10 @@ graph.nodes.insert(src_idx + 1 + len(inj) + i, cloned_node_i)  # then cloned pat
 
 **Mask nodes (INPUT16 / WEIGHT16)**
 
-For the `16`-variant models, mask nodes from `create_input16_mask` /
-`create_weight16_mask` (or their Conv equivalents) are appended at the end of
-`graph.nodes` via `graph.nodes.append`. They zero out all but 16 contiguous elements
-of `tgt_out_fault_injected`, producing `tgt_out_fault_injected_masked`.
+For the `16`-variant models, mask nodes from the MatMul, Conv, or FC-specific
+mask helpers are appended at the end of `graph.nodes` via `graph.nodes.append`.
+They zero out all but the FIdelity-defined 16-neuron group of
+`tgt_out_fault_injected`, producing `tgt_out_fault_injected_masked`.
 
 **Final Add node**
 

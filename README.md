@@ -1,7 +1,8 @@
 # ONNX Transformer Fault Injection — Overview
 
-Fault injection framework for LLaMA-based ONNX models, implementing the
-[FIdelity](https://ieeexplore.ieee.org/document/9251852/) software fault models for NVDLA-style accelerators.
+Fault injection framework for LLaMA and CNN ONNX models, implementing the
+[FIdelity](https://ieeexplore.ieee.org/document/9251852/) software fault models
+for NVDLA-style accelerators.
 
 ---
 
@@ -12,9 +13,13 @@ Fault injection framework for LLaMA-based ONNX models, implementing the
 ├── graph.py              # Injects fault nodes into an ONNX file
 ├── inject_ops.py         # Building blocks: ONNX subgraph constructors per fault model
 ├── llm_inference.py      # End-to-end inference runner: golden + faulty, saves CSV
-├── parser.py             # Parses any ONNX model → injection JSON configs (auto-detects quantized vs float)
+├── cnn_inference.py      # CNN single-image runner: golden + faulty, saves CSV
+├── parser.py             # Parses ONNX MatMul/Conv/FC-like ops → injection JSON configs
 ├── axes_parser.py        # ONNX graph patches (ReduceMean/Max axes, initializer handling)
-├── int8/                 # INT8 Quantized export helpers + SmoothQuant flow (see int8/README.md)
+├── int8/                 # INT8 quantized export helpers + SmoothQuant flow
+├── Dockerfile            # CUDA 12.4 runtime image with built onnx_bitflip.so
+├── docker_setup.sh       # Downloads ONNX Runtime dev files and builds the image
+├── onnx-cuda-bitflip/    # Custom CUDA BitFlip op source
 ├── configs/
 │   └── llama_7b.json     # Model spec: layer count, tensor names, file layout, KV cache dims
 ├── injection_llm/        # JSON layer configs produced by parser.py
@@ -29,7 +34,7 @@ Fault injection framework for LLaMA-based ONNX models, implementing the
 ```
 
 For the patched `transformers`-based INT8 export flow, see
-[int8/README.md](int8/README.md).
+[docs/quant.md](docs/quant.md).
 
 ---
 
@@ -50,11 +55,28 @@ For the patched `transformers`-based INT8 export flow, see
 
 ### 1. Install dependencies
 
+#### Local environment
+
 ```bash
 source setup.sh        # installs requirements + exports LD_LIBRARY_PATH for onnx_bitflip.so
 ```
 
 Requires **CUDA 12** and **cuDNN 9** for GPU inference with FP16 models.
+
+#### Docker
+
+The Docker flow downloads ONNX Runtime GPU 1.20.1 development files, builds the
+CUDA `BitFlip` custom op from `onnx-cuda-bitflip/`, copies the resulting
+`onnx_bitflip.so` into `llama/`, installs Python dependencies, and builds the
+`onnx-transformer:local` image.
+
+```bash
+bash docker_setup.sh
+docker run --gpus all -it onnx-transformer:local
+```
+
+The image is based on CUDA 12.4.1 and installs PyTorch with the CUDA 12.4 wheel
+index.
 
 ### 2. Prepare ONNX models
 #### a. Formatting ONNX Files
@@ -70,9 +92,10 @@ Prepare the config spec for the model. See [llm_inference.md](docs/llm_inference
 ### 4. Parse layer configs
 
 Run `parser.py` on a directory of ONNX files to generate one JSON injection config
-per MatMul layer (should also work for conv as well).  It auto-detects whether the model has its weight/activations quantized (INT8 — contains
-`Round` nodes) or float (FP16/FP32) and resolves the correct injection starting
-points accordingly.
+per target layer. By default it targets `MatMul`, `Conv`, `Gemm`, `Linear`, and
+`FullyConnected`. It auto-detects legacy fake-quant paths by tracing inputs back
+to `Round` nodes; standard Q/DQ CNN models remain at `DequantizeLinear` outputs
+so `graph.py` can inject at the real integer tensor.
 
 ```bash
 python parser.py decoders/7B16/ --output_dir injection_llm
@@ -89,7 +112,8 @@ Each JSON has the form:
     "input_tensor":  "<tensor name>",
     "target_layer":  "<MatMul node name or output tensor name>",
     "weight_tensor": "<tensor name>",
-    "model_name":    "decoders/7B16/decoder-merge-8.onnx"
+    "model_name":    "decoders/7B16/decoder-merge-8.onnx",
+    "layer_type":    "MatMul"
 }
 ```
 ### 5. Prepare Prompt (Dataset)
@@ -101,7 +125,7 @@ Runs golden + faulty inference for every combination of
 `(layer config × fault model × bit position × prompt)` and saves results to CSV.
 
 ```bash
-python llm_inference.py --prompts_file prompts.txt --onnxdir decoders/7B16
+python llm_inference.py --csv prompts.csv --onnxdir decoders/7B16
 ```
 
 | Argument | Default | Description |
@@ -123,8 +147,35 @@ python llm_inference.py --prompts_file prompts.txt --onnxdir decoders/7B16
 | `--resume` | *(off)* | Skip experiments already recorded in the CSV; safe to restart interrupted runs |
 | `--seed` | `0` | Global seed mixed into the injection index derivation; change to get a different draw of fault locations |
 
-Results are appended to `fault_injection_results.csv`.
+Results are appended to `results_<onnxdir>_<precision>_<dataset>.csv`, where
+the dataset tag is the CSV basename or Hugging Face dataset name suffix.
 See `docs/llm_inference.md` for full details.
+
+### 7. Run CNN fault injection experiments (cnn_inference.py)
+
+`cnn_inference.py` runs one image through the golden model and each injected
+model, then appends prediction and L-infinity difference results to CSV.
+
+```bash
+python parser.py path/to/cnn_onnx --output_dir injection_cnn --ops Conv Gemm
+python cnn_inference.py \
+  --config_dir injection_cnn \
+  --dataset cifar10 \
+  --sample_idx 0 \
+  --precision int8 \
+  --fault_models INPUT WEIGHT INPUT16 WEIGHT16 \
+  --provider CPUExecutionProvider
+```
+
+Supported datasets are `mnist`, `cifar10`, and `imagenet`. MNIST and CIFAR-10
+use `torchvision` downloads under `./data`; ImageNet expects local validation
+Arrow shards matching `data/**/imagenet-1k-validation-*.arrow`.
+
+For `float16` precision, use `CUDAExecutionProvider` so the CUDA `BitFlip`
+custom op can be registered. `RANDOM_BITFLIP` with `float32` uses
+`onnxruntime_extensions`.
+
+See [docs/cnn_inference.md](docs/cnn_inference.md) for full details.
 
 ---
 

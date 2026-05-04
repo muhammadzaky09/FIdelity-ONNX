@@ -8,7 +8,7 @@ No file I/O or graph loading — pure node building.
 
 ## Fault model functions
 
-### INT8 / quantised models
+### INT8 / INT4 / quantized models
 
 #### `create_quantized_fault_injection`
 ```python
@@ -17,7 +17,9 @@ create_quantized_fault_injection(input_name, output_name,
                                   rand_idx_name="rand_idx_inject",
                                   bit_pos_name="bit_pos_inject")
 ```
-Used by **INPUT**, **WEIGHT**, **INPUT16**, **WEIGHT16** on INT8 models.
+Used by **INPUT**, **WEIGHT**, **INPUT16**, **WEIGHT16** on INT8 and INT4
+campaigns. The helper builds an INT8 or UINT8 bit-flip delta; `graph.py` selects
+signedness from the requested precision or from the Q/DQ source tensor type.
 
 Produces a delta tensor representing the effect of flipping the bit at
 `bit_pos_inject` in the integer representation of one element at `rand_idx_inject`:
@@ -65,6 +67,14 @@ by FIdelity's INPUT16 fault model.
 #### `create_weight16_mask` / `create_conv_weight16_mask`
 Restricts the delta to a contiguous block of 16 spatial positions in the weight
 dimension, as specified by FIdelity's WEIGHT16 fault model.
+
+#### `create_fc_input16_mask` / `create_fc_weight16_mask`
+Restricts FC-like layer deltas when `graph.py` sees `Linear`,
+`FullyConnected`, `Gemm`, or a config with `"layer_type": "FC"`.
+
+For Conv outputs, `create_conv_input16_mask` keeps 16 consecutive output
+channels at one `(N, H, W)` position, while `create_conv_weight16_mask` keeps up
+to 16 consecutive positions along the output width for one `(N, C, H)` group.
 
 ---
 

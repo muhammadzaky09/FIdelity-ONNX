@@ -45,11 +45,12 @@ and a faulty inference and saves the comparison to CSV.
 | `--layer_files` | `injection_llm` | Directory with layer injection JSON configs |
 | `--precision` | `int8` | Model precision: `int8`, `float16`, `float32` |
 | `--fp16` / `--no_fp16` | `--fp16` | Enable/disable FP16 inference |
-| `--temperature` | `0.0` | Sampling temperature |
+| `--temperature` | `0.001` | Sampling temperature |
 | `--topp` | `0.1` | Top-p nucleus sampling |
 | `--max_tokens` | `300` | Max tokens to generate per inference |
 | `--poolsize` | `44` | Memory pool size in GB for decoder sessions |
 | `--resume` | *(off)* | Skip experiments already recorded in the CSV file (see below) |
+| `--seed` | `0` | Global seed mixed into the deterministic injection index derivation |
 
 #### Model spec JSON (`--model_config`)
 
@@ -155,7 +156,9 @@ If no CSV exists yet, `--resume` has no effect and a fresh run starts as normal.
 
 ## CSV output
 
-Results are appended to `fault_injection_results.csv`.
+Results are appended to
+`results_<onnxdir>_<precision>_<dataset>.csv`, where `<dataset>` is the local CSV
+basename or Hugging Face dataset name suffix.
 
 | Column | Description |
 |--------|-------------|
