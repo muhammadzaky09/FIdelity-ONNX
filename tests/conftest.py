@@ -21,7 +21,6 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     config.addinivalue_line("markers", "cuda: requires CUDAExecutionProvider and CUDA-compatible custom ops")
     config.addinivalue_line("markers", "custom_ops: validates ONNX Runtime custom op libraries")
-    config.addinivalue_line("markers", "slow: slower validation that may need model assets")
 
 
 def pytest_collection_modifyitems(config, items):

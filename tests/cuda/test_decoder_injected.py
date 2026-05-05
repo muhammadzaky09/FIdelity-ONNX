@@ -9,7 +9,7 @@ from onnx import TensorProto, helper
 from inject_ops import create_random_bitflip_injection
 
 
-pytestmark = [pytest.mark.cuda, pytest.mark.slow]
+pytestmark = pytest.mark.cuda
 
 RAND_IDX = 5
 BIT_POS = 7
