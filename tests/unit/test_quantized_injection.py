@@ -12,13 +12,12 @@ Verification:
 
 No custom ops required — runs on CPU.
 """
-import sys, os
 import numpy as np
 import onnx
+import pytest
 from onnx import helper, TensorProto
 import onnxruntime as ort
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from inject_ops import create_quantized_fault_injection
 
 
@@ -103,26 +102,42 @@ def run_case(label, x_np, rand_idx, bit_position, fp16=False, is_signed=True):
     print(f"  PASS\n")
 
 
-if __name__ == "__main__":
-    # ── Case 1: fp32, signed, 2-D tensor, flip bit 3 ─────────────────────────
-    # x[2] = 7.0 → int8=7 (0000_0111) XOR 8 (0000_1000) = 15 → delta = +8
-    x1 = np.array([[-5.0, 3.0, 7.0],
-                   [-1.0, 12.0, 2.0]], dtype=np.float32)
-    run_case("fp32 2D bit3", x1, rand_idx=2, bit_position=3)
-
-    # ── Case 2: fp32, signed, flip sign bit (bit 7) ───────────────────────────
-    # x[1] = 3.0 → int8=3 (0000_0011) XOR 128 (1000_0000) = -125 → delta = -128
-    x2 = np.array([10.0, 3.0, 5.0, -2.0], dtype=np.float32)
-    run_case("fp32 1D bit7 (sign)", x2, rand_idx=1, bit_position=7)
-
-    # ── Case 3: fp16 input, signed, 2-D tensor, flip bit 2 ───────────────────
-    # x[3] = -8.0 → int8=-8 (1111_1000) XOR 4 (0000_0100) = int8(-4) → delta = +4
-    x3 = np.array([[1.0, -3.0, 6.0, -8.0]], dtype=np.float16)
-    run_case("fp16 2D bit2", x3, rand_idx=3, bit_position=2, fp16=True)
-
-    # ── Case 4: unsigned (int4 mode), flip bit 0 ──────────────────────────────
-    # x[0] = 6.0 → uint8=6 (0000_0110) XOR 1 (0000_0001) = 7 → delta = +1
-    x4 = np.array([6.0, 2.0, 9.0], dtype=np.float32)
-    run_case("fp32 1D unsigned bit0", x4, rand_idx=0, bit_position=0, is_signed=False)
-
-    print("All cases PASSED.")
+@pytest.mark.parametrize(
+    ("label", "x_np", "rand_idx", "bit_position", "fp16", "is_signed"),
+    [
+        (
+            "fp32 2D bit3",
+            np.array([[-5.0, 3.0, 7.0], [-1.0, 12.0, 2.0]], dtype=np.float32),
+            2,
+            3,
+            False,
+            True,
+        ),
+        (
+            "fp32 1D bit7 sign",
+            np.array([10.0, 3.0, 5.0, -2.0], dtype=np.float32),
+            1,
+            7,
+            False,
+            True,
+        ),
+        (
+            "fp16 2D bit2",
+            np.array([[1.0, -3.0, 6.0, -8.0]], dtype=np.float16),
+            3,
+            2,
+            True,
+            True,
+        ),
+        (
+            "fp32 1D unsigned bit0",
+            np.array([6.0, 2.0, 9.0], dtype=np.float32),
+            0,
+            0,
+            False,
+            False,
+        ),
+    ],
+)
+def test_quantized_fault_injection_delta(label, x_np, rand_idx, bit_position, fp16, is_signed):
+    run_case(label, x_np, rand_idx, bit_position, fp16=fp16, is_signed=is_signed)
