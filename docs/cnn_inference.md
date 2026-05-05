@@ -4,6 +4,12 @@ Single-image fault injection runner for CNN ONNX models. For each layer config,
 fault model, and bit position, it runs a golden inference and a faulty inference,
 then appends prediction changes and L-infinity output difference to CSV.
 
+Use this doc after the shared environment setup and the
+`CNN inference setup (cnn_inference.py)` path in the top-level
+[README](../README.md). This path is for CNN single-image experiments; it is
+separate from the transformer decoder workflow in
+[llm_inference.md](llm_inference.md).
+
 ---
 
 ## Workflow
@@ -83,9 +89,8 @@ For each layer config:
 `weight_tensor`; for `RANDOM` and `RANDOM_BITFLIP` it is the target layer output.
 
 `RANDOM` and `RANDOM_BITFLIP` use `graph.py`'s direct output replacement path,
-which currently looks up `MatMul`, `Conv`, `Linear`, and `FullyConnected` nodes.
-For `Gemm` configs, use the `INPUT`, `WEIGHT`, `INPUT16`, or `WEIGHT16` fault
-models unless the model has an equivalent `Linear`/`FullyConnected` op name.
+which currently looks up `MatMul`, `Conv`, `Gemm`, `Linear`, and
+`FullyConnected` nodes.
 
 ---
 

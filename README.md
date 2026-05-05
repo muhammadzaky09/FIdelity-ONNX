@@ -51,19 +51,37 @@ For the patched `transformers`-based INT8 export flow, see
 
 ---
 
-## End-to-end workflow
+## Setup and run paths
 
-### 1. Install dependencies
+There are two separate inference entry points:
+
+- Use `llm_inference.py` for per-layer-split transformer decoder models such as
+  LLaMA. This path needs decoder ONNX files, a model spec JSON, prompt data, and
+  LLM layer configs.
+- Use `cnn_inference.py` for single-image CNN experiments. This path needs a CNN
+  ONNX model, image dataset selection, and CNN layer configs.
+
+Both paths use the same parser and graph injection code, but the model
+preparation and runtime arguments are different.
+
+### Shared environment setup
 
 #### Local environment
 
+Activate the project environment, then run the setup script:
+
 ```bash
-source setup.sh        # installs requirements + exports LD_LIBRARY_PATH for onnx_bitflip.so
+source ~/miniconda3/bin/activate fidelity-onnx
+source setup.sh
 ```
 
-Requires **CUDA 12** and **cuDNN 9** for GPU inference with FP16 models.
+`setup.sh` installs `requirements.txt`, adds `llama/` to `LD_LIBRARY_PATH` so
+ONNX Runtime can load `onnx_bitflip.so`, and installs PyTorch from the CUDA 12.4
+wheel index.
 
-#### Docker
+GPU inference with FP16 models requires **CUDA 12** and **cuDNN 9**.
+
+#### Docker environment
 
 The Docker flow downloads ONNX Runtime GPU 1.20.1 development files, builds the
 CUDA `BitFlip` custom op from `onnx-cuda-bitflip/`, copies the resulting
@@ -78,86 +96,155 @@ docker run --gpus all -it onnx-transformer:local
 The image is based on CUDA 12.4.1 and installs PyTorch with the CUDA 12.4 wheel
 index.
 
-### 2. Prepare ONNX models
-#### a. Formatting ONNX Files
-Place decoder ONNX files in intended files (e.g. `decoders/7B16/` or `decoders/fp16/`).
-Expected filename pattern: `decoder-merge-{idx}.onnx`
+---
 
-#### b. (Optional) Converting to FP16 model
-NVDLA doesnt natively support FP32 matrix multiplication. To do FP16 matrix operation, export FP32 models using [convert-fp32-to-fp16.py](tools/convert-fp32-to-fp16.py)
+## LLM inference setup (`llm_inference.py`)
 
-### 3. Making model configs
-Prepare the config spec for the model. See [llm_inference.md](docs/llm_inference.md) and [llama_7b.json](configs/llama_7b.json) for example. Netron is helpful
+Follow this path for transformer decoder experiments.
 
-### 4. Parse layer configs
+### 1. Prepare the LLM ONNX directory
 
-Run `parser.py` on a directory of ONNX files to generate one JSON injection config
-per target layer. By default it targets `MatMul`, `Conv`, `Gemm`, `Linear`, and
-`FullyConnected`. It auto-detects legacy fake-quant paths by tracing inputs back
-to `Round` nodes; standard Q/DQ CNN models remain at `DequantizeLinear` outputs
-so `graph.py` can inject at the real integer tensor.
+Place the model files in one directory such as `decoders/7B16/` or
+`decoders/fp16/`. The default LLaMA config expects:
+
+- Split decoder files named by `decoder_template`, for example
+  `decoder-merge-0.onnx`, `decoder-merge-1.onnx`, ...
+- `tokenizer.model`
+- `embed.onnx`
+- `norm.onnx`
+- `head.onnx`
+
+The exact filenames come from the selected `--model_config` JSON.
+
+If you need FP16 ONNX models, convert FP32 exports with
+[tools/convert-fp32-to-fp16.py](tools/convert-fp32-to-fp16.py). NVDLA does not
+natively support FP32 matrix multiplication.
+
+### 2. Prepare the LLM model config
+
+Copy [configs/llama_7b.json](configs/llama_7b.json) and edit it for the model.
+This file defines the decoder count, filename template, tokenizer filename,
+embedding/norm/head filenames, tensor names, and KV-cache dimensions.
+
+Netron is useful for checking the tensor names. See
+[docs/llm_inference.md](docs/llm_inference.md) for the field reference.
+
+### 3. Generate LLM layer configs
+
+Run `parser.py` on the LLM ONNX directory. For transformer decoder files, target
+`MatMul` unless you intentionally need other ops.
 
 ```bash
-python parser.py decoders/7B16/ --output_dir injection_llm
+python parser.py decoders/7B16/ --output_dir injection_llm --ops MatMul
 ```
 
-Each run produces `injection_llm/<model_stem>_<layer>.json` files, for example:
-```
+Each run produces JSON files like:
+
+```text
 injection_llm/decoder-merge-8__self_attn_q_proj_MatMul.json
 ```
 
-Each JSON has the form:
+Each JSON has this shape:
+
 ```json
 {
-    "input_tensor":  "<tensor name>",
-    "target_layer":  "<MatMul node name or output tensor name>",
+    "input_tensor": "<tensor name>",
+    "target_layer": "<MatMul node name or output tensor name>",
     "weight_tensor": "<tensor name>",
-    "model_name":    "decoders/7B16/decoder-merge-8.onnx",
-    "layer_type":    "MatMul"
+    "model_name": "decoders/7B16/decoder-merge-8.onnx",
+    "layer_type": "MatMul"
 }
 ```
-### 5. Prepare Prompt (Dataset)
-FIdelity-ONNX supports two types of prompt source: Local CSVs and HuggingFace dataset. Check [llm_inference.md](docs/llm_inference.md) for additional information.
 
-### 6. Run bulk fault injection experiments (llm_inference.py)
+### 4. Prepare prompts
 
-Runs golden + faulty inference for every combination of
-`(layer config × fault model × bit position × prompt)` and saves results to CSV.
+`llm_inference.py` requires exactly one prompt source:
+
+- `--csv prompts.csv` for a local CSV.
+- `--dataset cais/mmlu` for a Hugging Face dataset.
+
+Use `--prompt_field` to select the prompt column. Use `--label_field` only when
+you want a ground-truth label copied into the output CSV.
+
+### 5. Run LLM fault injection
 
 ```bash
-python llm_inference.py --csv prompts.csv --onnxdir decoders/7B16
+python llm_inference.py \
+  --csv prompts.csv \
+  --prompt_field question \
+  --model_config configs/llama_7b.json \
+  --onnxdir decoders/7B16 \
+  --layer_files injection_llm \
+  --precision int8
 ```
+
+`llm_inference.py` runs golden and faulty inference for every combination of
+`(layer config, fault model, bit position, prompt)` and appends results to
+`results_<onnxdir>_<precision>_<dataset>.csv`.
+
+Common LLM arguments:
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--csv PATH` | — | Local CSV file containing prompts (mutually exclusive with `--dataset`) |
-| `--dataset NAME` | — | HuggingFace dataset name (mutually exclusive with `--csv`) |
-| `--prompt_field` | `question` | Column name to use as the prompt string (applies to both sources) |
-| `--label_field` | *(none)* | Column name to record as ground-truth label in the CSV output |
-| `--dataset_split` | `test` | HuggingFace dataset split to load |
-| `--model_config PATH` | `configs/llama_7b.json` | Model spec JSON — copy and edit for a different model |
-| `--onnxdir` | `alpaca` | Directory containing decoder ONNX files |
-| `--layer_files` | `injection_llm` | Directory with layer injection JSON configs |
-| `--precision` | `int8` | weight precision `int8`, `float16`, or `float32` |
-| `--fp16` / `--no_fp16` | `--fp16` | Enable/disable matrix multiplication with FP16 precision |
-| `--temperature` | `0.0` | Sampling temperature |
+| `--csv PATH` | required unless `--dataset` is used | Local CSV file containing prompts |
+| `--dataset NAME` | required unless `--csv` is used | Hugging Face dataset name |
+| `--prompt_field` | `question` | Column name to use as the prompt string |
+| `--label_field` | *(none)* | Column name to record as ground-truth label |
+| `--dataset_split` | `test` | Hugging Face dataset split |
+| `--model_config PATH` | `configs/llama_7b.json` | Model spec JSON |
+| `--onnxdir` | `alpaca` | Directory containing tokenizer, embedding, decoder, norm, and head ONNX files |
+| `--layer_files` | `injection_llm` | Directory with LLM layer config JSON files |
+| `--precision` | `int8` | `int8`, `float16`, or `float32` |
+| `--fp16` / `--no_fp16` | `--fp16` | Enable or disable FP16 inference |
+| `--temperature` | `0.001` | Sampling temperature |
 | `--topp` | `0.1` | Top-p nucleus sampling |
 | `--max_tokens` | `300` | Max tokens to generate per inference |
 | `--poolsize` | `44` | Memory pool size in GB |
-| `--resume` | *(off)* | Skip experiments already recorded in the CSV; safe to restart interrupted runs |
-| `--seed` | `0` | Global seed mixed into the injection index derivation; change to get a different draw of fault locations |
+| `--resume` | *(off)* | Skip experiments already recorded in the CSV |
+| `--seed` | `0` | Seed mixed into deterministic injection index selection |
 
-Results are appended to `results_<onnxdir>_<precision>_<dataset>.csv`, where
-the dataset tag is the CSV basename or Hugging Face dataset name suffix.
-See `docs/llm_inference.md` for full details.
+See [docs/llm_inference.md](docs/llm_inference.md) for the full LLM behavior,
+CSV columns, resume logic, and model config reference.
 
-### 7. Run CNN fault injection experiments (cnn_inference.py)
+---
 
-`cnn_inference.py` runs one image through the golden model and each injected
-model, then appends prediction and L-infinity difference results to CSV.
+## CNN inference setup (`cnn_inference.py`)
+
+Follow this path for CNN single-image experiments.
+
+### 1. Prepare the CNN ONNX model
+
+Put the CNN ONNX file in a directory by itself or in a directory of CNN ONNX
+files that should all be parsed. `cnn_inference.py` reads the original model path
+from each generated JSON config.
+
+### 2. Generate CNN layer configs
+
+Run `parser.py` on the CNN ONNX directory. For CNNs, target `Conv` and FC-like
+ops such as `Gemm`.
 
 ```bash
 python parser.py path/to/cnn_onnx --output_dir injection_cnn --ops Conv Gemm
+```
+
+The parser writes one JSON config per target layer. CNN configs include
+`layer_type` so `graph.py` can choose the Conv, FC, or MatMul mask logic for
+`INPUT16` and `WEIGHT16`.
+
+### 3. Choose the image dataset
+
+`cnn_inference.py` supports:
+
+- `mnist`, downloaded through `torchvision` under `./data`.
+- `cifar10`, downloaded through `torchvision` under `./data`.
+- `imagenet`, loaded from local Arrow shards matching
+  `data/**/imagenet-1k-validation-*.arrow`.
+
+Use `--sample_idx` to choose the test-set image.
+
+### 4. Run CNN fault injection
+
+```bash
 python cnn_inference.py \
   --config_dir injection_cnn \
   --dataset cifar10 \
@@ -167,15 +254,30 @@ python cnn_inference.py \
   --provider CPUExecutionProvider
 ```
 
-Supported datasets are `mnist`, `cifar10`, and `imagenet`. MNIST and CIFAR-10
-use `torchvision` downloads under `./data`; ImageNet expects local validation
-Arrow shards matching `data/**/imagenet-1k-validation-*.arrow`.
+`cnn_inference.py` runs one image through the golden model and each injected
+model, then appends prediction and L-infinity difference results to
+`cnn_results_<dataset>_<precision>.csv` unless `--output_csv` is set.
+
+Common CNN arguments:
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--config_dir` | required | Directory containing CNN layer JSON configs from `parser.py` |
+| `--dataset` | required | `mnist`, `cifar10`, or `imagenet` |
+| `--sample_idx` | `0` | Test-set image index |
+| `--precision` | `int8` | `int8`, `int4`, `float16`, or `float32` |
+| `--fault_models` | `INPUT WEIGHT INPUT16 WEIGHT16` | Fault models to run |
+| `--bit_position` | *(none)* | If omitted, sweep all bits for the selected precision |
+| `--provider` | `CPUExecutionProvider` | `CPUExecutionProvider` or `CUDAExecutionProvider` |
+| `--seed` | `0` | Seed mixed into deterministic `rand_idx_inject` selection |
+| `--output_csv` | *(none)* | Output CSV path |
 
 For `float16` precision, use `CUDAExecutionProvider` so the CUDA `BitFlip`
 custom op can be registered. `RANDOM_BITFLIP` with `float32` uses
 `onnxruntime_extensions`.
 
-See [docs/cnn_inference.md](docs/cnn_inference.md) for full details.
+See [docs/cnn_inference.md](docs/cnn_inference.md) for full CNN behavior,
+precision requirements, dataset details, and CSV columns.
 
 ---
 

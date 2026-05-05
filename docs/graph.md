@@ -54,8 +54,9 @@ The patched model is then loaded into a GraphSurgeon (`gs`) graph for manipulati
 
 The target node is found by iterating `graph.nodes` and matching
 `config["target_layer"]` as either a **substring of `node.name`** or an
-**exact match of any output tensor name**. Only `MatMul`, `Conv`, `Linear`, and
-`FullyConnected` ops are considered on this direct replacement path.
+**exact match of any output tensor name**. Only `MatMul`, `Conv`, `Gemm`,
+`Linear`, and `FullyConnected` ops are considered on this direct replacement
+path.
 
 **Injection node conversion**
 

@@ -4,6 +4,12 @@ End-to-end fault injection runner for LLaMA ONNX models. For each combination of
 `(layer config × fault model × bit position × prompt)` it runs a golden inference
 and a faulty inference and saves the comparison to CSV.
 
+Use this doc after the shared environment setup and the
+`LLM inference setup (llm_inference.py)` path in the top-level
+[README](../README.md). This path is for transformer decoder models split into
+per-layer ONNX files; it is separate from the CNN workflow in
+[cnn_inference.md](cnn_inference.md).
+
 ---
 
 

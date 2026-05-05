@@ -188,7 +188,7 @@ def modify_onnx_graph(config,
         
         # Find target node: match by node name substring OR by output tensor name
         for node in graph.nodes:
-            if node.op in {"MatMul", "Conv", "Linear", "FullyConnected"} and \
+            if node.op in {"MatMul", "Conv", "Gemm"} and \
                (tgt_pat in node.name or any(o.name == tgt_pat for o in node.outputs)):
                 tgt_node = node
                 break
