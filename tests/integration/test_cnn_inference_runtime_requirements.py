@@ -111,3 +111,46 @@ def test_float32_random_bitflip_registers_onnxruntime_extensions(tmp_path, monke
     registrations = run_inference_with_fake_runtime(tmp_path, monkeypatch, "RANDOM_BITFLIP", "float32")
     assert registrations
     assert not any(path.endswith("llama/onnx_bitflip.so") for path in registrations)
+
+
+def test_inference_rejects_mixed_model_configs(tmp_path, monkeypatch):
+    model_path = tmp_path / "model.onnx"
+    other_model_path = tmp_path / "other_model.onnx"
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    make_model(model_path)
+    make_model(other_model_path)
+
+    base_config = {
+        "target_layer": "target",
+        "input_tensor": "X",
+        "weight_tensor": "W",
+        "layer_type": "MatMul",
+    }
+    (config_dir / "layer_a.json").write_text(json.dumps({
+        **base_config,
+        "model_name": str(model_path),
+    }))
+    (config_dir / "layer_b.json").write_text(json.dumps({
+        **base_config,
+        "model_name": str(other_model_path),
+    }))
+
+    monkeypatch.setattr(cnn_inference, "load_image", lambda dataset, sample_idx: (
+        np.array([[1.0, 2.0]], dtype=np.float32),
+        1,
+    ))
+
+    args = Namespace(
+        config_dir=str(config_dir),
+        dataset="cifar10",
+        sample_idx=0,
+        precision="int8",
+        fault_models=["INPUT"],
+        bit_position=0,
+        provider="CPUExecutionProvider",
+        seed=0,
+        output_csv=str(tmp_path / "results.csv"),
+    )
+    with pytest.raises(ValueError, match="one ONNX model per config directory"):
+        cnn_inference.inference(args)

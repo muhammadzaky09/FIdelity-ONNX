@@ -93,9 +93,15 @@ def inference(args):
         with open(path) as f:
             layer_configs.append((path.name, json.load(f)))
 
-    golden_session = None
-    input_name = None
-    current_model = None
+    model_name = layer_configs[0][1]["model_name"]
+
+    golden_session = ort.InferenceSession(model_name, providers=[args.provider])
+    model_inputs = [
+        inp for inp in golden_session.get_inputs()
+        if inp.name not in {"rand_idx_inject", "bit_pos_inject"}
+    ]
+    input_name = model_inputs[0].name
+    inferred_model = onnx.shape_inference.infer_shapes(onnx.load(model_name))
 
     fieldnames = [
         "Timestamp", "Layer_Config", "Layer_Type", "Fault_Model", "Bit_Position",
@@ -110,19 +116,8 @@ def inference(args):
             writer.writeheader()
 
         for layer_file, config in layer_configs:
-            if config["model_name"] != current_model:
-                current_model = config["model_name"]
-                golden_session = ort.InferenceSession(current_model, providers=[args.provider])
-                candidate_inputs = [
-                    inp for inp in golden_session.get_inputs()
-                    if inp.name not in {"rand_idx_inject", "bit_pos_inject"}
-                ]
-                rank4_inputs = [inp for inp in candidate_inputs if len(inp.shape) == 4]
-                input_name = (rank4_inputs[0] if rank4_inputs else candidate_inputs[0]).name
-
             golden_out = golden_session.run(None, {input_name: image})[0]
             golden_pred = int(np.argmax(golden_out.reshape(-1, golden_out.shape[-1]), axis=1)[0])
-            inferred_model = onnx.shape_inference.infer_shapes(onnx.load(config["model_name"]))
 
             logger.info(f"Layer config: {layer_file}")
             logger.info(f"Golden prediction: {golden_pred}, label: {label}")
